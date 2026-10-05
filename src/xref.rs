@@ -619,25 +619,39 @@ impl XrefManager {
         self.search_paths.clear();
     }
 
+    /// 解析外部参照文件名到实际路径。
+    ///
+    /// 解析顺序：`filename` 本身（绝对路径或包含目录的相对路径）→ 依次与
+    /// [`Self::add_search_path`] 注册的搜索目录拼接。
+    ///
+    /// - 命中磁盘上真实存在的文件时返回该路径；
+    /// - 都不存在时返回「首选候选路径」（`filename` 自身，或第一个搜索目录下的同名文件），
+    ///   便于调用方提示用户缺失位置；文件名为空时返回 `None`。
     pub fn resolve_path(&mut self, filename: &str) -> Option<PathBuf> {
-        let mut tried_paths = Vec::new();
+        if filename.trim().is_empty() {
+            return None;
+        }
 
-        for search_path in &self.search_paths {
+        let direct = PathBuf::from(filename);
+        if direct.exists() {
+            return Some(direct);
+        }
+
+        // 未命中磁盘：优先把第一个搜索目录下的同名文件作为提示位置，
+        // 没有配置搜索目录时回退为 `filename` 本身
+        let mut first_candidate = PathBuf::from(filename);
+
+        for (index, search_path) in self.search_paths.iter().enumerate() {
             let candidate = search_path.join(filename);
-            tried_paths.push(candidate.clone());
             if candidate.exists() {
                 return Some(candidate);
             }
-        }
-
-        let current_dir = PathBuf::from(".");
-        for path in &tried_paths {
-            if path.exists() {
-                return Some(path.clone());
+            if index == 0 {
+                first_candidate = candidate;
             }
         }
 
-        None
+        Some(first_candidate)
     }
 
     pub fn find_missing_xrefs(&self) -> Vec<&str> {

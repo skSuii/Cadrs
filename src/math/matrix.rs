@@ -1,17 +1,29 @@
+//! 3×3 矩阵：二维仿射变换与齐次坐标下的空间算子。
+//!
+//! 数据按行主序存放，第 0、1 行分别给出 X、Y 的输出系数，其第 2 列存放平移量，
+//! 第 2 行固定为齐次分量 `[0, 0, 1]`。
+//! [`Matrix3`] 多用于把 [`crate::math::Transform2D`] 的平移 / 旋转 / 缩放复合为单个矩阵，
+//! 再一次性作用于大量点（渲染、捕捉与几何求交）；矩阵本身不携带单位信息，
+//! 其平移分量沿用调用方坐标系的实数单位。
+
 use std::ops::{Add, Sub, Mul, Index, IndexMut};
 use std::fmt;
 
+/// 3×3 实数矩阵，按行主序存储，可表示二维仿射变换（含平移）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Matrix3 {
     data: [[f64; 3]; 3],
 }
 
 impl Matrix3 {
+    /// 用行主序的二维数组直接构造矩阵，不做任何校验或归一化。
+    /// - `data`：`data[行][列]`，共 3 行 3 列。
     #[inline]
     pub fn new(data: [[f64; 3]; 3]) -> Self {
         Self { data }
     }
 
+    /// 单位矩阵，作为矩阵乘法的不动元，对应恒等变换。
     #[inline]
     pub fn identity() -> Self {
         let mut data = [[0.0; 3]; 3];
@@ -21,21 +33,30 @@ impl Matrix3 {
         Self { data }
     }
 
+    /// 全零矩阵，对应把任意点映射到原点的退化变换（行列式为 0，不可逆）。
     #[inline]
     pub fn zero() -> Self {
         Self { data: [[0.0; 3]; 3] }
     }
 
+    /// 读取指定位置的元素，不做边界检查，越界会 panic。
+    /// - `row`：行下标，0 起。
+    /// - `col`：列下标，0 起。
     #[inline]
     pub fn get(&self, row: usize, col: usize) -> f64 {
         self.data[row][col]
     }
 
+    /// 就地写入指定位置的元素，会修改 `self`；越界会 panic。
+    /// - `row`：行下标，0 起。
+    /// - `col`：列下标，0 起。
+    /// - `value`：新值。
     #[inline]
     pub fn set(&mut self, row: usize, col: usize, value: f64) {
         self.data[row][col] = value;
     }
 
+    /// 3×3 行列式；为 0 表示矩阵奇异，变换把平面压扁到直线或点，不存在逆矩阵。
     #[inline]
     pub fn determinant(&self) -> f64 {
         let a = self.data[0][0];
@@ -51,6 +72,8 @@ impl Matrix3 {
         a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
     }
 
+    /// 转置矩阵：行列互换，不修改 `self`。
+    /// 旋转矩阵转置即反向旋转；含平移的行主序矩阵转置后平移量会落到最后一列。
     #[inline]
     pub fn transpose(&self) -> Self {
         let mut result = Self::zero();
@@ -62,6 +85,9 @@ impl Matrix3 {
         result
     }
 
+    /// 标准矩阵乘法 `self × other`，即先施加 `other` 再施加 `self`。
+    /// 乘法不可交换，参数顺序会影响结果；不修改任一操作数。
+    /// - `other`：右乘矩阵。
     #[inline]
     pub fn multiply(&self, other: &Self) -> Self {
         let mut result = Self::zero();
@@ -77,6 +103,9 @@ impl Matrix3 {
         result
     }
 
+    /// 把二维点视为齐次坐标 `(x, y, 1)` 做仿射变换，第 2 行参与平移计算。
+    /// 不修改 `v`，也不做透视除法；调用方应保证第 2 行为 `[0, 0, 1]`。
+    /// - `v`：待变换的点或向量，按点的语义处理（会叠加平移分量）。
     #[inline]
     pub fn multiply_vector(&self, v: &super::Vector2) -> super::Vector2 {
         let x = self.data[0][0] * v.x + self.data[0][1] * v.y + self.data[0][2];

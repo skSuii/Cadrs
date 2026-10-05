@@ -1,7 +1,14 @@
+//! SVG 文本渲染实现：`SVGRendererImpl` 按 `Renderer` 接口把每次绘制调用拼接为一个 SVG 元素，
+//! 最终由 `get_svg_content` 生成带 `viewBox` 的完整文档，供导出与网页预览复用。
+//! 数值原样写入 SVG 用户坐标（原点在左上、y 轴向下），本模块不做世界坐标到屏幕坐标的变换。
+
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline};
 use crate::render::{RenderStyle, Renderer};
 use std::f64::consts::PI;
 
+/// 基于字符串拼接的 SVG 渲染器：把逐个图元累积为 SVG 元素列表。
+/// 调用方提供的数值直接写入 SVG 用户坐标；输出只能通过 `get_svg_content` 取回，
+/// `present` 与 `flush` 为空实现，不影响已累积的内容。
 pub struct SVGRendererImpl {
     width: usize,
     height: usize,
@@ -10,6 +17,8 @@ pub struct SVGRendererImpl {
 }
 
 impl SVGRendererImpl {
+    /// 创建指定画布尺寸的渲染器：图元列表为空，当前样式为 `RenderStyle::default()`。
+    /// - `width`、`height`：画布尺寸（像素），同时写入 SVG 的 `width`、`height` 与 `viewBox`。
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -19,6 +28,14 @@ impl SVGRendererImpl {
         }
     }
 
+    /// 生成完整 SVG 文本：根标签带 `width`、`height` 与 `viewBox="0 0 宽 高"`，后面按绘制顺序拼接所有元素。
+    /// 返回新构造的字符串，可反复调用；元素列表与当前样式不会被修改。
+    /// # 示例
+    /// ```
+    /// use cadrs::render::svg_renderer::SVGRendererImpl;
+    /// let renderer = SVGRendererImpl::new(800, 600);
+    /// assert!(renderer.get_svg_content().contains("<svg"));
+    /// ```
     pub fn get_svg_content(&self) -> String {
         let mut svg = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}">"#,

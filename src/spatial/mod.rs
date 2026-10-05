@@ -1,2 +1,12 @@
+//! 空间索引层：按坐标快速检索几何对象，避免全表扫描。
+//!
+//! 三种索引都以包围盒过滤，并共享 [`SpatialObject`] 约束（对象需提供包围盒与字符串标识），
+//! 因此查询返回的是「包围盒命中」的候选集合，精确几何判定需调用者自行完成：
+//! - [`RTree`]：可动态插入的 R 树，适合对象多、分布不均的场景；
+//! - [`QuadtreeNode`]：四叉树，适合范围固定、对象较少的场景；
+//! - [`GridIndex`]：均匀网格，适合点查询密集的场景。
+//!
+//! 选型可参考 [`SpatialIndexFactory::recommend_index`]。
+
+/// 空间索引实现：包围盒 [`BoundingBox2D`]、R 树、四叉树与均匀网格。
 pub mod spatial_index;
-pub use spatial_index::*;

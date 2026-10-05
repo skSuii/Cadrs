@@ -1,3 +1,13 @@
+//! 曲线求交：直线段、圆、圆弧、折线、NURBS 与椭圆两两之间的交点计算。
+//!
+//! 统一返回 `IntersectionResult`：无交点、单点、多点或重叠（两条共线直线段）。每个交点附带
+//! `IntersectionPoint`，其中 `parameter1`/`parameter2` 是两条曲线各自的参数——线段为 `[0, 1]`
+//! 上的比例，圆/圆弧为弧度角，折线为按段累计的归一化比例。
+//!
+//! 计算只使用世界坐标的 x、y，z 分量不参与判断；除圆弧与椭圆会按自身角度范围过滤外，
+//! 直线一律按“线段”而不是无限直线处理。折线与 NURBS 相关函数分别受 `polyline`、`nurbs`、
+//! `ellipse` feature 控制。
+
 use crate::geometry::{Point, Line, Circle, Arc};
 #[cfg(feature = "ellipse")]
 use crate::geometry::Ellipse;
@@ -6,21 +16,51 @@ use crate::geometry::Polyline;
 #[cfg(any(feature = "nurbs", feature = "ellipse"))]
 use crate::geometry::NURBS;
 
+/// 一个交点及其在两条曲线上的参数。
 #[derive(Debug, Clone)]
 pub struct IntersectionPoint {
+    /// 交点坐标（世界坐标；z 取输入曲线对应的值或 0）。
     pub point: Point,
+    /// 第一条曲线上的参数：线段与折线为归一化比例，圆/圆弧为弧度角。
     pub parameter1: f64,
+    /// 第二条曲线上的参数，含义同 `parameter1`；部分函数不填充该值（恒为 `0.0`）。
     pub parameter2: f64,
 }
 
+/// 求交结果。
 #[derive(Debug, Clone)]
 pub enum IntersectionResult {
+    /// 无交点，或交点全部落在曲线的有效范围之外。
     None,
+    /// 恰好一个交点，例如相切或只有一端命中。
     Point(IntersectionPoint),
+    /// 两个及以上交点。
     Points(Vec<IntersectionPoint>),
+    /// 两条直线段共线重叠，携带第一条线段。
     Overlapping(Line),
 }
 
+/// 求两条直线段的交点（按线段处理，不是无限直线）。
+///
+/// - `line1` / `line2`：两条线段，按值传入，函数不会修改调用方的数据。
+///
+/// 平行且共线时返回 `IntersectionResult::Overlapping(line1)`，平行但不共线返回 `None`；
+/// 交点落在任一线段的延长线上（参数不在 `[0, 1]`）时同样返回 `None`。平行判定使用 `1e-10` 容差，
+/// 交点的两个参数分别是两条线段上的比例。
+///
+/// # 示例
+/// ```
+/// use cadrs::geometry::{Point, Line};
+/// use cadrs::geometry::intersection::{intersect_line_line, IntersectionResult};
+///
+/// let line1 = Line::new(Point::origin(), Point::new(1.0, 0.0, 0.0));
+/// let line2 = Line::new(Point::new(0.5, -0.5, 0.0), Point::new(0.5, 0.5, 0.0));
+///
+/// match intersect_line_line(line1, line2) {
+///     IntersectionResult::Point(ip) => assert!((ip.point.x - 0.5).abs() < 1e-10),
+///     _ => panic!("期望得到单个交点"),
+/// }
+/// ```
 #[inline]
 pub fn intersect_line_line(line1: Line, line2: Line) -> IntersectionResult {
     let x1 = line1.start.x;
@@ -61,6 +101,27 @@ pub fn intersect_line_line(line1: Line, line2: Line) -> IntersectionResult {
     }
 }
 
+/// 求直线段与圆的交点。
+///
+/// - `line`：线段；只有落在段内（参数 `[0, 1]`）的根才算命中，延长线上的交点被丢弃。
+/// - `circle`：圆，由圆心与半径确定。
+///
+/// 判别式为负返回 `None`，相切或只有一个根落在段内返回 `Point`，两个根都在段内返回 `Points`；
+/// 交点的 `parameter1` 是线段上的比例，`parameter2` 未填充（恒为 `0.0`）。
+///
+/// # 示例
+/// ```
+/// use cadrs::geometry::{Point, Line, Circle};
+/// use cadrs::geometry::intersection::{intersect_line_circle, IntersectionResult};
+///
+/// let line = Line::new(Point::new(-1.0, 0.0, 0.0), Point::new(1.0, 0.0, 0.0));
+/// let circle = Circle::new(Point::origin(), 0.5);
+///
+/// match intersect_line_circle(line, circle) {
+///     IntersectionResult::Points(points) => assert_eq!(points.len(), 2),
+///     _ => panic!("期望得到两个交点"),
+/// }
+/// ```
 #[inline]
 pub fn intersect_line_circle(line: Line, circle: Circle) -> IntersectionResult {
     let dx = line.end.x - line.start.x;
@@ -124,6 +185,11 @@ pub fn intersect_line_circle(line: Line, circle: Circle) -> IntersectionResult {
     }
 }
 
+/// 求两个圆的交点。
+///
+/// 圆心距大于半径和（外离）、小于半径差（内含）或两圆重合（同心且等半径）时返回 `None`；
+/// 相切返回一个交点，两个交点时返回 `Points`。
+/// 交点的 `parameter1` 是点在第一个圆上的弧度角，`parameter2` 未填充（恒为 `0.0`）。
 #[inline]
 pub fn intersect_circle_circle(circle1: Circle, circle2: Circle) -> IntersectionResult {
     let dx = circle2.center.x - circle1.center.x;

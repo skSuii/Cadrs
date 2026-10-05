@@ -1,35 +1,58 @@
+//! 直线段图元模块：定义由两个端点确定的有限长线段 [`Line`]。
+//!
+//! `Line` 表示线段而非无限长直线，端点顺序决定方向：方向向量、参数化取值与偏移方向都以
+//! `start` → `end` 为准。长度与坐标均为模型空间单位，仅涉及平面的方法忽略 Z 坐标。
+
 use crate::geometry::Point;
 use crate::math::Vector2;
 use std::fmt;
 use serde::{Serialize, Deserialize};
 
+/// 由起点与终点确定的直线段。
+///
+/// 端点为 [`Point`]，类型为 `Copy`；所有查询方法都不修改线段本身。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Line {
+    /// 起点，也是参数 `t = 0.0` 对应的位置。
     pub start: Point,
+    /// 终点，也是参数 `t = 1.0` 对应的位置。
     pub end: Point,
 }
 
 impl Line {
+    /// 以起点、终点构造线段。
+    ///
+    /// - `start`：起点。
+    /// - `end`：终点；与 `start` 重合时表示零长度线段，此类线段的方向向量为零向量。
     #[inline]
     pub fn new(start: Point, end: Point) -> Self {
         Self { start, end }
     }
 
+    /// 构造平面线段的语义别名，行为与 [`Line::new`] 完全一致，Z 坐标不会被特殊处理。
+    ///
+    /// - `start`：起点。
+    /// - `end`：终点。
     #[inline]
     pub fn new2d(start: Point, end: Point) -> Self {
         Self { start, end }
     }
 
+    /// 返回由起点指向终点的单位方向向量。
+    ///
+    /// 仅使用 `x`/`y`；线段为零长度时归一化结果为零向量，不会 panic。
     #[inline]
     pub fn direction(&self) -> Vector2 {
         (self.end.to_vector2() - self.start.to_vector2()).normalize()
     }
 
+    /// 返回线段的三维长度，等于两端点之间的距离，非负。
     #[inline]
     pub fn length(&self) -> f64 {
         self.start.distance_to(&self.end)
     }
 
+    /// 返回线段中点，三个坐标分量分别取两端点的平均。
     #[inline]
     pub fn midpoint(&self) -> Point {
         Point::new(
@@ -39,6 +62,17 @@ impl Line {
         )
     }
 
+    /// 返回参数 `t` 处的点，按线性插值计算。
+    ///
+    /// - `t`：参数值，`0.0` 对应 `start`、`1.0` 对应 `end`；不做区间限制，区间外的值会外推。
+    ///
+    /// # 示例
+    /// ```
+    /// # use cadrs::geometry::{Line, Point};
+    /// let line = Line::new(Point::new(0.0, 0.0, 0.0), Point::new(10.0, 10.0, 0.0));
+    /// let p = line.point_at_parameter(0.5);
+    /// assert!((p.x - 5.0).abs() < 1e-10);
+    /// ```
     #[inline]
     pub fn point_at_parameter(&self, t: f64) -> Point {
         Point::new(
@@ -48,16 +82,28 @@ impl Line {
         )
     }
 
+    /// 判断线段是否水平，即两端点 Y 坐标之差小于 `1e-10`。
+    ///
+    /// 使用绝对容差比较，与线段长度无关；零长度线段同时满足水平与垂直。
     #[inline]
     pub fn is_horizontal(&self) -> bool {
         (self.end.y - self.start.y).abs() < 1e-10
     }
 
+    /// 判断线段是否垂直，即两端点 X 坐标之差小于 `1e-10`。
+    ///
+    /// 同样使用绝对容差比较。
     #[inline]
     pub fn is_vertical(&self) -> bool {
         (self.end.x - self.start.x).abs() < 1e-10
     }
 
+    /// 返回线段上距离给定点最近的点。
+    ///
+    /// 结果被限制在线段范围内（参数截断到 `[0, 1]`），因此位于端点外侧时返回对应端点；
+    /// 仅使用 `x`/`y`，返回点的 Z 坐标取自线段上的插值位置。
+    ///
+    /// - `p`：查询点。
     #[inline]
     pub fn closest_point(&self, p: &Point) -> Point {
         let d = self.end.to_vector2() - self.start.to_vector2();
@@ -70,16 +116,23 @@ impl Line {
         self.point_at_parameter(t)
     }
 
+    /// 返回到给定点的最短距离，非负。
+    ///
+    /// 距离按 [`Line::closest_point`] 的投影点计算，点位于端点外侧时取到最近端点的距离。
+    ///
+    /// - `p`：查询点。
     #[inline]
     pub fn distance_to_point(&self, p: &Point) -> f64 {
         p.distance_to(&self.closest_point(p))
     }
 
+    /// 返回起点，等价于公开字段 `start`。
     #[inline]
     pub fn start_point(&self) -> Point {
         self.start
     }
 
+    /// 返回终点，等价于公开字段 `end`。
     #[inline]
     pub fn end_point(&self) -> Point {
         self.end

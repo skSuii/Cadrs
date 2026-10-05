@@ -1,20 +1,35 @@
 //! 位图导出：软件光栅化（线条距离场抗锯齿 + 2x 超采样，填充偶奇规则）。
 //! 支持 PNG / BMP / JPEG / WebP。
+//!
+//! 先把 文档 经 `render::tessellation` 拆成线段与填充多边形，再在固定分辨率上限内自建像素缓冲：
+//! 线条按到线段的距离场取覆盖度（最大混合，只影响亮度不改变色相），填充按偶奇规则填色，
+//! 最后 2x2 下采样合成并交给 `image` crate 编码。输出不透明，背景固定为白色，因此不支持透明通道。
+//!
+//! 像素尺寸由 文档 外接矩形加 10 个世界单位边距后的宽高比决定，长边约 1600 像素（内部
+//! 超采样缓冲为其 2 倍），最大单边被限制在 4000 像素。
 
 use std::io::Cursor;
 
 use crate::data_structure::Document;
 use crate::render::tessellation::{document_bbox, entity_fills, entity_polylines};
 
+/// 位图输出格式：决定编码器与文件扩展名，不携带任何图像参数（质量、色深使用 `image` 默认值）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RasterFormat {
+    /// PNG：无损，适合线条图与需要后续再编辑的场景。
     Png,
+    /// BMP：未压缩位图，兼容性最好但体积最大。
     Bmp,
+    /// JPEG：有损压缩，线条边缘可能出现振铃；背景为白色，没有透明区域。
     Jpeg,
+    /// WebP：无损或有损由编码器默认设置决定，体积通常小于 PNG。
     WebP,
 }
 
 impl RasterFormat {
+    /// 该格式惯用的文件扩展名（不含点号），用于拼接输出文件名。
+    ///
+    /// JPEG 返回 `jpg` 而不是 `jpeg`，`Bmp` 返回小写 `bmp`。
     pub fn extension(self) -> &'static str {
         match self {
             RasterFormat::Png => "png",
@@ -34,7 +49,22 @@ impl RasterFormat {
     }
 }
 
-/// 导出为位图字节流。最大边约 1600px。
+/// 把 文档 光栅化为位图字节流。最大边约 1600px。
+///
+/// 输出像素尺寸由 文档 外接矩形加 10 个世界单位边距后的宽高比决定：长边缩放到 1600 像素，
+/// 短边等比取整并至少为 1，单边上限 4000 像素。背景为不透明白色，填充按偶奇规则先上色，
+/// 线条再以黑色（1 输出像素宽，距离场抗锯齿）叠加在其上。
+/// - `doc`：只读，导出过程不修改 文档。
+/// - `fmt`：目标编码格式，决定编码器本身，不改变像素尺寸。
+///
+/// 返回可直接写盘的编码后字节流（PNG/BMP/WebP 无损，JPEG 有损）；
+/// 当 文档 无实体、无外接矩形、细分后没有任何线段或填充，或编码失败时返回错误。
+///
+/// # 示例
+/// ```ignore
+/// let png = export(&doc, RasterFormat::Png).unwrap();
+/// assert_eq!(RasterFormat::Png.extension(), "png");
+/// ```
 pub fn export(doc: &Document, fmt: RasterFormat) -> Result<Vec<u8>, String> {
     if doc.entity_count() == 0 {
         return Err("Canvas is empty, nothing to export".to_string());

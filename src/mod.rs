@@ -13,52 +13,85 @@
 //! - **空间索引**：R-Tree、四叉树、网格索引
 //! - **约束求解**：几何约束和尺寸约束求解
 //! - **API层**：命令系统、事件处理、Python绑定
+//!
+//! # 本文件的职责
+//!
+//! 作为聚合入口，本文件声明并再导出 `geometry`、`dimension`、`hatch` 等子模块，
+//! 并提供进程级的 SDK 全局状态（[`initialize`]、[`get_config`]、[`shutdown`]）
+//! 以及 `geom_tools`、`unit_conversion` 两个纯函数工具子模块。
+//!
+//! 全局状态只保存一份 [`SDKConfig`]，同一进程只允许初始化一次；工具函数不读写
+//! 文档（Document），也不产生副作用。
+//!
+//! 单位与角度约定：长度使用图形单位，`unit_conversion` 以毫米为基准；`geom_tools`
+//! 中角度同时存在「度」与「弧度」两套接口，使用前请确认函数名（如 `deg_to_rad`、
+//! `normalize_angle`（度）、`normalize_angle_rad`（弧度））。
 
+/// 几何曲线子模块。
 pub mod geometry;
+/// 尺寸标注子模块。
 pub mod dimension;
+/// 几何公差子模块。
 pub mod geometric_tolerance;
+/// 图案填充子模块。
 pub mod hatch;
+/// 文字处理子模块。
 pub mod text;
+/// 图层管理子模块。
 pub mod layer;
+/// 空间索引子模块。
 pub mod spatial;
+/// 约束求解子模块。
 pub mod constraint;
+/// API 聚合子模块（命令系统、事件处理等）。
 pub mod api;
 
+/// 再导出 `geometry` 的全部公开项。
 pub use geometry::*;
+/// 再导出 `dimension` 的全部公开项。
 pub use dimension::*;
+/// 再导出 `geometric_tolerance` 的全部公开项。
 pub use geometric_tolerance::*;
+/// 再导出 `hatch` 的全部公开项。
 pub use hatch::*;
+/// 再导出 `text` 的全部公开项。
 pub use text::*;
+/// 再导出 `layer` 的全部公开项。
 pub use layer::*;
+/// 再导出 `spatial` 的全部公开项。
 pub use spatial::*;
+/// 再导出 `constraint` 的全部公开项。
 pub use constraint::*;
+/// 再导出 `api` 的全部公开项。
 pub use api::*;
 
-/// CAD SDK主版本号
+/// SDK 版本号，按 `(主版本, 次版本, 修订号)` 排列。
 pub const CAD_SDK_VERSION: (u32, u32, u32) = (0, 1, 0);
 
-/// 获取SDK版本字符串
+/// 返回形如 `"0.1.0"` 的版本字符串，内容取自 [`CAD_SDK_VERSION`]。
 #[inline]
 pub fn version() -> String {
     format!("{}.{}.{}", CAD_SDK_VERSION.0, CAD_SDK_VERSION.1, CAD_SDK_VERSION.2)
 }
 
-/// SDK初始化配置
+/// SDK 初始化配置：新建文档与新建标注时采用的默认单位与尺寸。
+///
+/// [`Default`] 给出常用缺省值（毫米、文字高 2.5、箭头 2.5、标注文字 3.5）。
 #[derive(Debug, Clone)]
 pub struct SDKConfig {
-    /// 默认图形单位
+    /// 默认图形单位，决定长度值的解释方式与显示单位。
     pub default_units: DrawingUnits,
-    /// 默认文字高度
+    /// 默认文字高度，单位为图形单位。
     pub default_text_height: f64,
-    /// 默认标注箭头大小
+    /// 默认标注箭头大小，单位为图形单位。
     pub default_arrow_size: f64,
-    /// 默认标注文字高度
+    /// 默认标注文字高度，单位为图形单位。
     pub default_dim_text_height: f64,
-    /// 默认图层名称
+    /// 新建实体默认归属的图层名。
     pub default_layer: String,
-    /// 精度小数位数
+    /// 长度显示保留的小数位数。
     pub decimal_places: u32,
-    /// 角度显示精度
+    /// 角度显示保留的小数位数（单位为度）。
     pub angular_precision: u32,
 }
 
@@ -93,7 +126,10 @@ impl GlobalState {
 
 static mut GLOBAL_STATE: Option<GlobalState> = None;
 
-/// 初始化SDK
+/// 初始化 SDK 全局状态。
+///
+/// 副作用：写入进程级全局状态；已初始化时直接返回 `Err("SDK已经初始化")`，
+/// 不做任何修改。该函数不创建文档，也不写盘。
 ///
 /// # 示例
 ///
@@ -114,13 +150,17 @@ pub fn initialize(config: SDKConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// 检查SDK是否已初始化
+/// 判断 SDK 全局状态是否已建立。
+///
+/// 返回 `true` 时表示可以读取 [`get_config`] 中的配置。
 #[inline]
 pub fn is_initialized() -> bool {
     unsafe { GLOBAL_STATE.is_some() }
 }
 
-/// 获取当前配置
+/// 读取当前全局配置的副本。
+///
+/// 未初始化时返回 [`SDKConfig::default`]，不会失败；读取本身不修改全局状态。
 pub fn get_config() -> SDKConfig {
     unsafe {
         GLOBAL_STATE.as_ref()
@@ -129,7 +169,9 @@ pub fn get_config() -> SDKConfig {
     }
 }
 
-/// 更新配置
+/// 用 `config` 整体替换全局配置。
+///
+/// 副作用：修改全局状态；未初始化时静默忽略，不返回错误也不自动初始化。
 pub fn update_config(config: SDKConfig) {
     unsafe {
         if let Some(state) = GLOBAL_STATE.as_mut() {
@@ -138,14 +180,19 @@ pub fn update_config(config: SDKConfig) {
     }
 }
 
-/// 关闭SDK
+/// 关闭 SDK 并清空全局配置。
+///
+/// 副作用：重置全局状态，之后 [`is_initialized`] 返回 `false`、[`get_config`] 返回
+/// 默认值；已创建的文档（Document）与实体不受影响，可再次 [`initialize`]。
 pub fn shutdown() {
     unsafe {
         GLOBAL_STATE = None;
     }
 }
 
-/// 便捷函数：创建新图形文档
+/// 便捷函数：创建名为 `name` 的空图形文档。
+///
+/// 不依赖全局状态，也不写入磁盘。
 ///
 /// # 示例
 ///
@@ -158,7 +205,9 @@ pub fn create_document(name: String) -> CADDocument {
     CADDocument::new(name)
 }
 
-/// 便捷函数：创建图层管理器
+/// 便捷函数：创建一个不含任何图层的图层管理器。
+///
+/// 常用图层需由调用者自行添加；该函数不读取全局配置。
 ///
 /// # 示例
 ///
@@ -185,13 +234,20 @@ pub fn get_pattern_library() -> impl HatchPatternProvider {
     PatternLibrary
 }
 
-/// 图案库提供者特征
+/// 图案库提供者特征：按名称取出填充图案，并枚举全部可用名称。
 pub trait HatchPatternProvider {
+    /// 按名称查询填充图案。
+    ///
+    /// - `name`：图案名，需与实现登记的名称完全一致（标准库要求全大写，如 `"ANSI31"`）。
+    /// 返回：命中时给出图案副本；名称未知时为 `None`。
     fn get_pattern(&self, name: &str) -> Option<HatchPattern>;
+    /// 列出本库登记的全部图案名称。
+    ///
+    /// 返回：名称列表，顺序与库内定义顺序一致，可直接用于界面下拉框。
     fn available_patterns(&self) -> Vec<&'static str>;
 }
 
-/// 标准图案库实现
+/// 标准图案库：支持 ANSI31–ANSI38、ISO01–ISO05、BRICK、GRID、CROSS 共 16 种图案。
 pub struct StandardPatternLibrary;
 
 impl HatchPatternProvider for StandardPatternLibrary {
@@ -370,27 +426,27 @@ impl StandardPatternLibrary {
     }
 }
 
-/// 便捷函数：获取标准图案库
+/// 便捷函数：取得标准图案库（无需实例化状态）。
+///
+/// 返回：实现了 [`HatchPatternProvider`] 的 [`StandardPatternLibrary`]。
 #[inline]
 pub fn standard_pattern_library() -> impl HatchPatternProvider {
     StandardPatternLibrary
 }
 
-/// 常用几何计算工具
+/// 常用几何计算工具：点、直线、圆与多边形之间的纯函数运算。
+///
+/// 坐标一律为图形单位；角度接口中 `deg_to_rad`/`rad_to_deg`/`normalize_angle`
+/// 处理「度」，`normalize_angle_rad`/`angle_between_lines` 及角度容差参数处理「弧度」。
+/// 除「返回」中注明外，函数不修改入参。
 pub mod geom_tools {
     use super::*;
 
-    /// 计算两条直线的交点
+    /// 计算两条直线的交点。
     ///
-    /// # 参数
-    ///
-    /// * `l1` - 第一条直线
-    /// * `l2` - 第二条直线
-    /// * `extend` - 是否允许延长直线
-    ///
-    /// # 返回
-    ///
-    /// 如果相交返回交点，否则返回None
+    /// - `l1`、`l2`：参与求交的两条直线（按其起点/终点定义的线段）。
+    /// - `extend`：为 `false` 时交点必须同时落在两条线段范围内；为 `true` 时按无限长直线求交。
+    /// 返回：唯一交点；两线平行或重合（判定分母近似为 0，阈值 1e-10）时为 `None`。
     pub fn line_intersection(l1: &Line, l2: &Line, extend: bool) -> Option<Point> {
         let x1 = l1.start.x;
         let y1 = l1.start.y;
@@ -428,7 +484,10 @@ pub mod geom_tools {
         ))
     }
 
-    /// 计算点到直线的投影
+    /// 计算点在直线段上的投影点。
+    ///
+    /// - `point`：待投影的点；`line`：目标线段。
+    /// 返回：投影被限制在线段范围内，点落在线段之外时给出较近的端点；线段退化为一点时返回其起点。
     pub fn point_line_projection(point: &Point, line: &Line) -> Point {
         let dx = line.end.x - line.start.x;
         let dy = line.end.y - line.start.y;
@@ -447,12 +506,16 @@ pub mod geom_tools {
         )
     }
 
-    /// 计算点到直线的最短距离
+    /// 计算点到直线段的最短距离。
+    ///
+    /// 返回：点到线段的欧氏距离，恒为非负；点在线段之外时取到较近端点的距离。
     pub fn point_line_distance(point: &Point, line: &Line) -> f64 {
         point.distance_to(&point_line_projection(point, line))
     }
 
-    /// 计算两条直线的最短距离
+    /// 计算两条线段的最短距离。
+    ///
+    /// 返回：两条直线（含延长线）相交时为 0，否则为四个端点到对侧线段距离中的最小值。
     pub fn line_line_distance(l1: &Line, l2: &Line) -> f64 {
         let intersection = line_intersection(l1, l2, true);
         if intersection.is_some() {
@@ -467,12 +530,17 @@ pub mod geom_tools {
         d1.min(d2).min(d3).min(d4)
     }
 
-    /// 判断点是否在直线段上
+    /// 判断点是否落在线段上（含两个端点）。
+    ///
+    /// - `tolerance`：距离容差，单位为图形单位；距离必须严格小于该值才算命中。
+    /// 返回：命中为 `true`；点在线段外或距离恰好等于容差时为 `false`。
     pub fn point_on_line(point: &Point, line: &Line, tolerance: f64) -> bool {
         point_line_distance(point, line) < tolerance
     }
 
-    /// 计算多边形面积
+    /// 计算多边形面积（鞋带公式，取绝对值，与顶点绕向无关）。
+    ///
+    /// 顶点按给定顺序首尾相连；返回：非负面积，顶点数少于 3 时返回 0。
     pub fn polygon_area(points: &[Point]) -> f64 {
         if points.len() < 3 {
             return 0.0;
@@ -488,7 +556,9 @@ pub mod geom_tools {
         area.abs() / 2.0
     }
 
-    /// 计算多边形的形心
+    /// 计算多边形的形心（面积质心）。
+    ///
+    /// 返回：顶点数不少于 3 且面积大于 1e-10 时给出形心；顶点过少或面积退化为 0 时为 `None`。
     pub fn polygon_centroid(points: &[Point]) -> Option<Point> {
         if points.len() < 3 {
             return None;
@@ -515,7 +585,10 @@ pub mod geom_tools {
         Some(Point::new(cx, cy))
     }
 
-    /// 判断点是否在多边形内
+    /// 判断点是否在多边形内部（射线法）。
+    ///
+    /// 顶点需按顺序给出并首尾相连。返回：内部为 `true`、外部为 `false`；
+    /// 恰好落在边界上的点结果不确定，需要精确判边界时请配合 [`point_on_line`]。
     pub fn point_in_polygon(point: &Point, points: &[Point]) -> bool {
         let mut inside = false;
         let n = points.len();
@@ -536,19 +609,21 @@ pub mod geom_tools {
         inside
     }
 
-    /// 角度转换为弧度
+    /// 把角度值从「度」换算为「弧度」。
     #[inline]
     pub fn deg_to_rad(degrees: f64) -> f64 {
         degrees * std::f64::consts::PI / 180.0
     }
 
-    /// 弧度转换为角度
+    /// 把角度值从「弧度」换算为「度」。
     #[inline]
     pub fn rad_to_deg(radians: f64) -> f64 {
         radians * 180.0 / std::f64::consts::PI
     }
 
-    /// 角度规范化到0-360范围
+    /// 把以「度」为单位的角度规范化到 [0, 360) 区间。
+    ///
+    /// 返回：与输入等价的角度；负值加 360 后落入区间，输入 360 返回 0。
     #[inline]
     pub fn normalize_angle(angle: f64) -> f64 {
         let mut angle = angle % 360.0;
@@ -558,7 +633,9 @@ pub mod geom_tools {
         angle
     }
 
-    /// 角度规范化到0-2π范围
+    /// 把以「弧度」为单位的角度规范化到 [0, 2π) 区间。
+    ///
+    /// 返回：与输入等价的弧度值；负值加 2π 后落入区间。
     #[inline]
     pub fn normalize_angle_rad(angle: f64) -> f64 {
         let mut angle = angle % (2.0 * std::f64::consts::PI);
@@ -568,13 +645,19 @@ pub mod geom_tools {
         angle
     }
 
-    /// 线性插值
+    /// 在 `a` 与 `b` 之间做线性插值。
+    ///
+    /// - `t`：插值系数，会被截断到 [0, 1]，因此结果不会越出 `a`、`b` 之间。
+    /// 返回：`t = 0` 时为 `a`，`t = 1` 时为 `b`，中间值按比例过渡。
     #[inline]
     pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
         a + (b - a) * t.clamp(0.0, 1.0)
     }
 
-    /// 点线性插值
+    /// 对两个点做线性插值，坐标逐分量使用 [`lerp`]。
+    ///
+    /// - `t`：插值系数，同样被截断到 [0, 1]。
+    /// 返回：位于 `p1` 与 `p2` 连线上的点。
     #[inline]
     pub fn point_lerp(p1: &Point, p2: &Point, t: f64) -> Point {
         Point::new(
@@ -583,7 +666,9 @@ pub mod geom_tools {
         )
     }
 
-    /// 计算两条直线的夹角（弧度）
+    /// 计算两条直线的夹角。
+    ///
+    /// 返回：以弧度表示的夹角，范围 [0, π]；与直线方向无关，取夹角与补角中的较小者。
     pub fn angle_between_lines(l1: &Line, l2: &Line) -> f64 {
         let a1 = l1.start.angle_to(l1.end);
         let a2 = l2.start.angle_to(l2.end);
@@ -591,12 +676,18 @@ pub mod geom_tools {
         diff.abs().min(2.0 * std::f64::consts::PI - diff.abs())
     }
 
-    /// 计算点到圆的最短距离
+    /// 计算点到圆周的距离（点到圆心的距离减去半径）。
+    ///
+    /// 返回：带符号的径向距离——点在圆外为正、圆上为 0、圆内为负。
     pub fn point_circle_distance(point: &Point, circle: &Circle) -> f64 {
         point.distance_to(&circle.center) - circle.radius
     }
 
-    /// 计算点到圆弧的最短距离
+    /// 计算点到圆弧的最短距离。
+    ///
+    /// 圆弧起止角以弧度表示并按逆时针方向展开：点的方位角落在弧内时取径向距离的
+    /// 绝对值，落在弧外时取到较近端点的距离。
+    /// 返回：最短欧氏距离，恒为非负。
     pub fn point_arc_distance(point: &Point, arc: &Arc) -> f64 {
         let center_dist = point.distance_to(&arc.center);
         let radial_dist = center_dist - arc.radius;
@@ -629,7 +720,10 @@ pub mod geom_tools {
         }
     }
 
-    /// 判断两条线是否平行
+    /// 判断两条直线是否平行。
+    ///
+    /// - `tolerance`：方向夹角容差，单位为弧度；方向差折算到 [0, π] 后严格小于该值才算平行。
+    /// 返回：平行为 `true`；共线也算平行。
     pub fn lines_parallel(l1: &Line, l2: &Line, tolerance: f64) -> bool {
         let angle1 = l1.start.angle_to(l1.end);
         let angle2 = l2.start.angle_to(l2.end);
@@ -637,7 +731,10 @@ pub mod geom_tools {
         diff.min(2.0 * std::f64::consts::PI - diff) < tolerance
     }
 
-    /// 判断两条线是否垂直
+    /// 判断两条直线是否垂直。
+    ///
+    /// - `tolerance`：角度容差，单位为弧度；方向差与 π/2 的偏差严格小于该值才算垂直。
+    /// 返回：垂直为 `true`。
     pub fn lines_perpendicular(l1: &Line, l2: &Line, tolerance: f64) -> bool {
         let angle1 = l1.start.angle_to(l1.end);
         let angle2 = l2.start.angle_to(l2.end);
@@ -646,7 +743,10 @@ pub mod geom_tools {
     }
 }
 
-/// 单位转换工具
+/// 单位转换工具：以毫米为基准在各图形单位之间换算。
+///
+/// 长度单位使用固定因子（1 厘米 = 10 毫米、1 米 = 1000 毫米、1 英寸 = 25.4 毫米、
+/// 1 英尺 = 304.8 毫米）；角度及其他未列出的单位因子为 1，即不参与换算。
 pub mod unit_conversion {
     use super::*;
 
@@ -657,7 +757,10 @@ pub mod unit_conversion {
     const INCH_FACTOR: f64 = 25.4;
     const FT_FACTOR: f64 = 304.8;
 
-    /// 将数值从一个单位转换到另一个单位
+    /// 把数值从一个单位换算为另一个单位。
+    ///
+    /// - `value`：按 `from` 单位解释的数值；`from`、`to`：源单位与目标单位。
+    /// 返回：按 `to` 单位表示的等值数值；角度类单位因子为 1，原值返回。
     pub fn convert(value: f64, from: DrawingUnits, to: DrawingUnits) -> f64 {
         let mm_value = value * get_factor(from);
         mm_value / get_factor(to)
@@ -675,31 +778,32 @@ pub mod unit_conversion {
         }
     }
 
-    /// 毫米转英寸
+    /// 毫米转英寸（除以 25.4）。
     #[inline]
     pub fn mm_to_inch(mm: f64) -> f64 {
         mm / INCH_FACTOR
     }
 
-    /// 英寸转毫米
+    /// 英寸转毫米（乘以 25.4）。
     #[inline]
     pub fn inch_to_mm(inch: f64) -> f64 {
         inch * INCH_FACTOR
     }
 
-    /// 毫米转英尺
+    /// 毫米转英尺（除以 304.8）。
     #[inline]
     pub fn mm_to_foot(mm: f64) -> f64 {
         mm / FT_FACTOR
     }
 
-    /// 英尺转毫米
+    /// 英尺转毫米（乘以 304.8）。
     #[inline]
     pub fn foot_to_mm(foot: f64) -> f64 {
         foot * FT_FACTOR
     }
 }
 
-/// 导入常用类型
+/// 再导出 `geom_tools` 的全部公开项。
 pub use geom_tools::*;
+/// 再导出 `unit_conversion` 的全部公开项。
 pub use unit_conversion::*;

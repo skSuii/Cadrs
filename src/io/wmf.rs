@@ -1,5 +1,12 @@
 //! WMF (Windows Metafile, Placeable) 导出。
 //! 16 位坐标空间，POLYLINE 记录绘制所有实体，黑色画笔。
+//!
+//! 输出为 Placeable 头 + 标准 WMF 头 + 图元记录三段拼接的字节流，供 Windows 应用或旧版
+//! Office 直接嵌入。世界坐标先等比映射到固定的 16 位窗口（`SPAN`，留 `MARGIN` 边距）并翻转
+//! y 轴，因此宽高比由映射保留、绝对尺寸不保留；填充用 `META_POLYGON` 配 `META_CREATEBRUSHINDIRECT`
+//! 创建的实心画刷上色，线条统一用索引 0 的黑色画笔。
+//!
+//! 本模块只生成字节，不写盘。
 
 use crate::data_structure::Document;
 use crate::render::tessellation::{document_bbox, entity_fills, entity_polylines};
@@ -25,6 +32,21 @@ fn rec_header(buf: &mut Vec<u8>, words: u32, func: u16) {
     put_u16(buf, func);
 }
 
+/// 把 文档 导出为 Placeable WMF 字节流（含 Placeable 头 22 字节、WMF 头 18 字节与全部记录）。
+///
+/// 世界坐标按 文档 外接矩形等比缩放到 `SPAN` 见方的窗口内（四周留 `MARGIN` 的逻辑单位边距），
+/// 并翻转 y 轴；坐标一律舍入为 i16。每条折线输出一个 `META_POLYLINE` 记录，闭合折线会补上首点；
+/// 每个填充多边形输出一个 `META_POLYGON` 记录并配套一把实心画刷。
+/// - `doc`：只读，导出过程不修改 文档。
+///
+/// 返回完整的 `.wmf` 文件内容（Placeable 头中的校验和为前 10 个字的异或）；
+/// 当 文档 无实体、无外接矩形或细分后没有任何折线/填充时返回错误（此时不产生半个文件）。
+///
+/// # 示例
+/// ```ignore
+/// let bytes = export(&doc).unwrap();
+/// assert_eq!(bytes.len() % 2, 0);
+/// ```
 pub fn export(doc: &Document) -> Result<Vec<u8>, String> {
     if doc.entity_count() == 0 {
         return Err("Canvas is empty, nothing to export".to_string());

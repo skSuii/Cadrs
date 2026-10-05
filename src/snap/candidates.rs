@@ -1,5 +1,8 @@
-//! 对象捕捉候选点：端点 / 中点 / 圆心 / 交点。
-//! 世界坐标候选生成；屏幕空间半径过滤由上层完成。
+//! 捕捉候选点：直接枚举实体上的端点、中点、圆心与实体之间的交点。
+//!
+//! 本模块只做「世界坐标下的候选生成」，不涉及捕捉半径、优先级与光标距离判断——
+//! 靶框范围内的筛选由上层（如 [`SnapManager`](super::snap_point::SnapManager)）完成。
+//! 曲线实体的交点由 Tessellation 细分折线两两求交近似得到，精度取决于细分上限 `cap`。
 
 use crate::data_structure::{Entity, EntityGeometry};
 use crate::geometry::intersection::{intersect_line_line, IntersectionResult};
@@ -8,7 +11,10 @@ use crate::render::tessellation::entity_polylines;
 
 use super::snap_point::SnapType;
 
-/// 实体的捕捉候选点（世界坐标）：直线端点/中点、圆/椭圆/圆弧圆心、圆弧端点、多段线首尾
+/// 枚举单个实体的捕捉候选点（世界坐标）及其捕捉类型。
+///
+/// 直线给出两个端点与中点，圆、椭圆给出圆心，圆弧给出圆心与两个端点，多段线给出首尾顶点；
+/// 其它几何类型返回空向量。结果不去重，也不按屏幕距离过滤。
 pub fn snap_candidates(entity: &Entity) -> Vec<(Point, SnapType)> {
     let mut out = Vec::new();
     let mut push = |p: Point, kind: SnapType| out.push((p, kind));
@@ -39,7 +45,11 @@ pub fn snap_candidates(entity: &Entity) -> Vec<(Point, SnapType)> {
     out
 }
 
-/// 实体细分线段（限制数量，用于交点计算）
+/// 把实体离散成用于求交的线段，并限制每轮的抽样段数。
+///
+/// - `cap`：细分上限，每段按下标步长 `(n - 1) / cap` 抽取，累计段数超过 `cap * 2` 时提前结束；
+/// 必须大于 0，否则内部整数除法会 panic；
+/// 返回：世界坐标下的线段端点对；实体无法离散出至少两个点时返回空向量。
 pub fn entity_segments_capped(entity: &Entity, cap: usize) -> Vec<(Point, Point)> {
     let mut segs: Vec<(Point, Point)> = Vec::new();
     for (pts, _) in entity_polylines(entity) {
@@ -61,12 +71,22 @@ pub fn entity_segments_capped(entity: &Entity, cap: usize) -> Vec<(Point, Point)
     segs
 }
 
-/// 两个实体的交点（细分线段两两求交，细分上限 32）
+/// 求两个实体的交点（世界坐标），每侧细分上限固定为 32。
+///
+/// 内部委托给 [`intersection_candidates_capped`]，结果为近似值，可能重复、无序。
 pub fn intersection_candidates(a: &Entity, b: &Entity) -> Vec<Point> {
     intersection_candidates_capped(a, b, 32)
 }
 
-/// 两个实体的交点（细分线段两两求交，细分上限 cap）
+/// 求两个实体的交点（世界坐标），并指定每侧的细分上限。
+///
+/// - `a`、`b`：参与求交的两个实体；
+/// - `cap`：每侧细分上限，越大越精确，代价约按 `cap²` 增长，必须大于 0；
+/// 返回：所有细分线段对的交点，可能为空、可能重复，不做去重与排序。
+///
+/// # 示例
+/// `intersection_candidates(&a, &b)` 对两条交叉直线返回其交点，如 `(0,0)-(10,10)` 与
+/// `(0,10)-(10,0)` 的候选交点为 `(5,5)`。
 pub fn intersection_candidates_capped(a: &Entity, b: &Entity, cap: usize) -> Vec<Point> {
     let sa = entity_segments_capped(a, cap);
     let sb = entity_segments_capped(b, cap);

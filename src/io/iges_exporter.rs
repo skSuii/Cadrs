@@ -1,16 +1,26 @@
+//! IGES 导出实现：把 `Document` 的实体写成 IGES 5.x 文本。
+//! 输出由头段（H）、全局段（G）、目录段（D）、参数段（P）与结束段（T）组成，
+//! 每条实体在目录段占两行（DE 行与 D 行）、在参数段占一行，编号从 1 起按实体顺序递增；
+//! 支持点(116)、线(110)、圆与圆弧(100)、椭圆(104)、B 样条(126) 与折线(110)，其余几何（如 NURBS）被整条跳过。
 use crate::data_structure::{Document, Entity, ObjectId, EntityType, EntityGeometry, Layer};
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS};
 use std::io::{Write, BufWriter};
 use std::fs::File;
 use crate::io::{Exporter, Error, ExportOptions};
 
+/// IGES 版本标记。
 #[derive(Debug, Clone, PartialEq)]
 pub enum IGESVersion {
+    /// IGES 5.0。
     V5_0,
+    /// IGES 5.1。
     V5_1,
+    /// IGES 5.3，`IGESExporter::new` 的默认取值。
     V5_3,
 }
 
+/// IGES 导出器：实现 `Exporter`，把 `Document` 序列化为 IGES 文本。
+/// 导出只读取文档，不修改传入的 `doc`；文本可写入文件，也可直接从内存取回。
 pub struct IGESExporter {
     version: IGESVersion,
     line_counter: usize,
@@ -42,10 +52,13 @@ struct DirectoryEntry {
 }
 
 impl IGESExporter {
+    /// 创建导出器，版本标记默认为 IGES 5.3，行号与实体编号都从 1 开始。
     pub fn new() -> Self {
         Self::with_version(IGESVersion::V5_3)
     }
 
+    /// 指定版本标记创建导出器。
+    /// - `version`：写入实例的版本；当前输出固定为 IGES 5.x 文本结构，该字段仅作记录。
     pub fn with_version(version: IGESVersion) -> Self {
         Self {
             version,
@@ -403,6 +416,7 @@ impl Exporter for IGESExporter {
 }
 
 impl IGESExporter {
+    /// 返回本格式的注册信息：扩展名 `iges`、名称 IGES、文本（非二进制），版本列表为 5.0/5.1/5.3。
     pub fn get_format_info(&self) -> crate::io::FormatInfo {
         crate::io::FormatInfo::new(
             "iges",
@@ -415,6 +429,18 @@ impl IGESExporter {
         .with_version("5.3")
     }
 
+    /// 把文档导出为 IGES 文本，不写盘。
+    /// - `doc`：待导出的文档；只读取文档名与实体，不修改文档本身；不支持的几何类型不会产生任何输出行。
+    /// 返回 `Ok`：完整的 IGES 文本（H/G/D/P/T 各段）；`Err` 目前不会被触发，接口为兼容导出框架保留。
+    /// 头段与全局段使用当前 UTC 日期，因此同一文档两次导出的内容可能不同。
+    /// # 示例
+    /// ```
+    /// use cadrs::Document;
+    /// use cadrs::io::iges_exporter::IGESExporter;
+    /// let doc = Document::new("Test".to_string());
+    /// let text = IGESExporter::new().export_to_string(&doc).unwrap();
+    /// assert!(text.contains("HDSW1"));
+    /// ```
     pub fn export_to_string(&self, doc: &Document) -> Result<String, String> {
         let mut exporter = IGESExporter::new();
         exporter.line_counter = 1;

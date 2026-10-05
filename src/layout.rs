@@ -1,9 +1,23 @@
+//! 布局与打印：图纸规格、打印设置、布局、视口与布局管理器。
+//!
+//! 核心概念：
+//! - `PaperSize`/`PaperUnit`/`PaperOrientation`：图纸规格、计量单位与方向，规格尺寸以毫米给出；
+//! - `PlotSettings`：一次打印的完整参数（设备、图纸、比例、旋转、打印样式表等）；
+//! - `Layout`：一个布局（或模型空间页），含图纸尺寸、页边距与可打印区域，长度单位毫米；
+//! - `Viewport`：布局中的视口，决定模型空间的取景范围、比例以及捕捉/栅格设置；
+//! - `LayoutManager`：按下标管理布局（初始为 Layout1、Layout2）与全局视口表，并单独持有模型空间布局。
+//!
+//! 长度除特别说明外均为毫米；`PlotRotation` 用度，视口取景与捕捉使用模型空间的世界单位。
+
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
+/// 图纸方向：纵向或横向；只影响纸张宽高的取法（见 `Layout::paper_width`/`paper_height`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaperOrientation {
+    /// 纵向：宽取短边、高取长边。
     Portrait,
+    /// 横向：宽取长边、高取短边。
     Landscape,
 }
 
@@ -13,10 +27,14 @@ impl Default for PaperOrientation {
     }
 }
 
+/// 图纸单位：打印尺寸使用的计量单位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaperUnit {
+    /// 英寸。
     Inches,
+    /// 毫米（默认，与布局的毫米尺寸一致）。
     Millimeters,
+    /// 像素：用于屏幕或位图输出，不对应物理尺寸。
     Pixels,
 }
 
@@ -26,26 +44,43 @@ impl Default for PaperUnit {
     }
 }
 
+/// 标准图纸规格；`width_mm`/`height_mm` 给出纵向（Portrait）下的短边与长边，单位毫米。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaperSize {
+    /// ISO A0（841 × 1189 mm）。
     A0,
+    /// ISO A1（594 × 841 mm）。
     A1,
+    /// ISO A2（420 × 594 mm）。
     A2,
+    /// ISO A3（297 × 420 mm）。
     A3,
+    /// ISO A4（210 × 297 mm），也是默认规格。
     A4,
+    /// ISO A5（148 × 210 mm）。
     A5,
+    /// 美制 Letter（8.5 × 11 in，215.9 × 279.4 mm）。
     Letter,
+    /// 美制 Legal（8.5 × 14 in，215.9 × 355.6 mm）。
     Legal,
+    /// 美制 Tabloid（11 × 17 in，279.4 × 431.8 mm）。
     Tabloid,
+    /// 美制建筑 Arch A（9 × 12 in，228.6 × 304.8 mm）。
     ArchA,
+    /// 美制建筑 Arch B（12 × 18 in，304.8 × 457.2 mm）。
     ArchB,
+    /// 美制建筑 Arch C（18 × 24 in，457.2 × 609.6 mm）。
     ArchC,
+    /// 美制建筑 Arch D（24 × 36 in，609.6 × 914.4 mm）。
     ArchD,
+    /// 美制建筑 Arch E（36 × 48 in，914.4 × 1219.2 mm）。
     ArchE,
+    /// 自定义规格：本实现回退为 210 × 297 mm（等同 A4），真实尺寸需由调用方另行维护。
     Custom,
 }
 
 impl PaperSize {
+    /// 返回该规格在纵向（Portrait）下的宽度，单位为毫米；`Custom` 回退为 210.0。
     #[inline]
     pub fn width_mm(&self) -> f64 {
         match self {
@@ -67,6 +102,7 @@ impl PaperSize {
         }
     }
 
+    /// 返回该规格在纵向（Portrait）下的高度，单位为毫米；`Custom` 回退为 297.0。
     #[inline]
     pub fn height_mm(&self) -> f64 {
         match self {
@@ -88,6 +124,7 @@ impl PaperSize {
         }
     }
 
+    /// 返回带尺寸说明的显示名（如 `"ISO A4 (210 x 297 mm)"`、`"Letter (8.5 x 11 in)"`）。
     #[inline]
     pub fn name(&self) -> String {
         match self {
@@ -116,11 +153,16 @@ impl Default for PaperSize {
     }
 }
 
+/// 打印旋转：仅支持 0°、90°、180°、270° 四档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlotRotation {
+    /// 不旋转（0°）。
     Degrees0,
+    /// 逆时针旋转 90°。
     Degrees90,
+    /// 旋转 180°。
     Degrees180,
+    /// 旋转 270°（即顺时针 90°）。
     Degrees270,
 }
 
@@ -131,20 +173,28 @@ impl Default for PlotRotation {
 }
 
 impl PlotRotation {
+    /// 按角度就近取整到 0° / 90° / 180° / 270° 四档。
+    ///
+    /// - `degrees`：任意角度（度），负值与超过 360° 的值会先归一化到 `[0, 360)`。
+    /// - 返回：最接近的打印旋转档位；边界值 45°/135°/225°/315° 取较大的档位。
     #[inline]
     pub fn from_degrees(degrees: f64) -> Self {
-        let normalized = degrees % 360.0;
-        if normalized >= -45.0 && normalized < 45.0 {
+        // 归一化到 [0, 360)，注意 Rust 的 % 对负数返回负值
+        let normalized = (degrees % 360.0 + 360.0) % 360.0;
+        if normalized < 45.0 {
             PlotRotation::Degrees0
-        } else if normalized >= 45.0 && normalized < 135.0 {
+        } else if normalized < 135.0 {
             PlotRotation::Degrees90
-        } else if normalized >= 135.0 || normalized < -135.0 {
+        } else if normalized < 225.0 {
             PlotRotation::Degrees180
-        } else {
+        } else if normalized < 315.0 {
             PlotRotation::Degrees270
+        } else {
+            PlotRotation::Degrees0
         }
     }
 
+    /// 返回该档位对应的角度值（0.0、90.0、180.0 或 270.0），单位：度。
     #[inline]
     pub fn to_degrees(&self) -> f64 {
         match self {
@@ -156,13 +206,20 @@ impl PlotRotation {
     }
 }
 
+/// 打印范围类型：决定打印时取哪一块区域。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlotType {
+    /// 按当前布局的图纸范围打印（默认）。
     Layout,
+    /// 按图形实际外接范围打印。
     Extents,
+    /// 按图形界限打印。
     Limits,
+    /// 按命名视图的范围打印。
     View,
+    /// 按用户框选窗口打印，窗口由 `PlotSettings::plot_window_area` 给出。
     Window,
+    /// 按当前屏幕显示范围打印。
     Display,
 }
 
@@ -172,11 +229,16 @@ impl Default for PlotType {
     }
 }
 
+/// 着色打印方式：决定三维/实体内容在图纸上的显示效果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShadePlotMode {
+    /// 按屏幕显示效果输出（默认）。
     AsDisplayed,
+    /// 仅输出线框。
     Wireframe,
+    /// 线框并消除隐藏线。
     Hidden,
+    /// 按渲染结果输出。
     Rendered,
 }
 

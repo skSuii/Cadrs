@@ -1,5 +1,12 @@
 //! SVG 导入/导出。
 //! 导出: LINE/CIRCLE/ARC/POLYLINE；导入: line/rect/circle/ellipse/polyline/polygon/path(M/L/H/V/A/Z)。
+//!
+//! 两条链路共用 `render::tessellation` 的细分结果：导出把实体拆成折线与填充后写成 SVG 元素，
+//! 导入把 SVG 图元转回 实体 并放入一个新的 文档。SVG 的 y 轴向下、长度单位为无单位用户单位，
+//! 而本 SDK 的世界坐标 y 轴向上，因此导入与导出两侧都会做 y 取反，只有 `circle`/`ellipse`
+//! 的半径等标量不受翻转影响。
+//!
+//! `SVGImporter` 把 `import` 接入 `io::Importer` 注册体系，供按扩展名分发的统一入口调用。
 
 use std::collections::HashMap;
 
@@ -10,6 +17,20 @@ use crate::render::tessellation::{document_bbox, entity_fills, entity_polylines}
 
 // ---------------- 导出 ----------------
 
+/// 把 文档 导出为 SVG 文本，世界坐标按 y 轴翻转后映射到页面坐标。
+///
+/// 画布尺寸取 文档 中所有实体的外接矩形（`document_bbox`）四周各加 10 个世界单位的边距；
+/// 先绘制填充与实心 Hatch，再绘制黑色 1px 描边，标注与文字分解为折线笔画输出。
+/// - `doc`：只读，导出过程不修改 文档。
+///
+/// 返回完整的 `<svg>` 文本；当 文档 没有任何实体或无法求出外接矩形时返回错误
+/// （两种情况的错误信息都是 `Canvas is empty, nothing to export`）。
+///
+/// # 示例
+/// ```ignore
+/// let svg = export(&doc).unwrap();
+/// assert!(svg.contains("<line"));
+/// ```
 pub fn export(doc: &Document) -> Result<String, String> {
     if doc.entity_count() == 0 {
         return Err("Canvas is empty, nothing to export".to_string());
@@ -499,7 +520,21 @@ fn handle_tag(doc: &mut Document, name: &str, attrs: &Attrs) {
     }
 }
 
-/// 导入 SVG 文本，返回新文档
+/// 解析 SVG 文本并返回新建的 文档（固定名称 `imported-svg`），坐标已翻转为 y 轴向上。
+///
+/// 逐个扫描标签：跳过注释与 `<?...?>`/`<!...>` 声明，不处理嵌套结构、样式表与变换属性，
+/// 因此只识别当前标签自身的几何属性。`rect`/`polyline`/`polygon`/非正圆 `ellipse` 都转换为
+/// 折线（椭圆固定采样 72 段，圆整为 实体 圆），`path` 的弧段（A/a）按 0.1 弧度步长离散为折线。
+/// - `src`：SVG 文本，函数不会读取磁盘。
+///
+/// 返回至少含一个实体的 文档；若整个文本没有可识别的图形则返回错误
+/// （`No recognizable shapes found in SVG`），而不是返回空 文档。
+///
+/// # 示例
+/// ```ignore
+/// let doc = import("<svg><path d=\"M 0 0 L 10 0 L 10 10 Z\"/></svg>").unwrap();
+/// assert!(doc.entity_count() >= 1);
+/// ```
 pub fn import(src: &str) -> Result<Document, String> {
     let mut doc = Document::new("imported-svg".to_string());
     let mut pos = 0usize;
@@ -533,11 +568,14 @@ pub fn import(src: &str) -> Result<Document, String> {
     Ok(doc)
 }
 
-/// SVG 导入器
+/// SVG 导入器：把 `import` 包装成 `io::Importer` 实现，供按扩展名分发的入口统一调用。
+///
+/// 无状态，可自由按值拷贝；只接受扩展名 `svg`（忽略大小写）。
 #[derive(Debug, Clone, Copy)]
 pub struct SVGImporter;
 
 impl SVGImporter {
+    /// 创建一个 SVG 导入器。状态为空，重复调用等价。
     pub fn new() -> Self {
         Self
     }

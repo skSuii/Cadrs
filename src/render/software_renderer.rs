@@ -1,7 +1,13 @@
+//! 具体渲染后端实现：CPU 软件光栅后端（结果写入内存帧缓冲）与 SVG 文本后端，
+//! 另含 WebGL、Direct2D、Metal、OpenGL 的占位实现（仅在其目标平台编译，`is_available` 均为 false）。
+//! 接口与能力描述来自 `render_backend` 模块，绘制数据来自 `renderer` 模块。
+
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline};
 use crate::render::{RenderBackend, RenderBuffer, RenderStyle};
 use super::render_backend::BackendCapabilities;
 
+/// CPU 软件光栅后端：把绘制结果写入内存 `RenderBuffer`，全平台可用。
+/// 注意 `render_backend` 模块中另有一份同名类型，二者彼此独立，混用会造成类型不匹配。
 pub struct SoftwareRenderer {
     width: usize,
     height: usize,
@@ -9,6 +15,7 @@ pub struct SoftwareRenderer {
 }
 
 impl SoftwareRenderer {
+    /// 创建默认后端：输出 800×600 像素，并分配同尺寸帧缓冲（初始为黑色）。
     pub fn new() -> Self {
         Self {
             width: 800,
@@ -17,6 +24,8 @@ impl SoftwareRenderer {
         }
     }
 
+    /// 创建指定像素尺寸的后端及其帧缓冲。
+    /// - `width`、`height`：像素列数与行数，不做上限校验。
     pub fn with_size(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -76,6 +85,8 @@ impl Default for SoftwareRenderer {
     }
 }
 
+/// SVG 文本后端：把清屏与图元累积为 SVG 字符串，`present` 时补上 `</svg>` 结束标签。
+/// 不提供内存帧缓冲，结果通过 `get_svg` 读取；与 `render_backend` 模块的同名类型同样相互独立。
 pub struct SVGRenderer {
     width: usize,
     height: usize,
@@ -83,6 +94,7 @@ pub struct SVGRenderer {
 }
 
 impl SVGRenderer {
+    /// 创建默认后端：画布 800×600 像素，内容为空串，需先调用 `initialize` 才写入 `<svg>` 根标签。
     pub fn new() -> Self {
         Self {
             width: 800,
@@ -91,6 +103,8 @@ impl SVGRenderer {
         }
     }
 
+    /// 创建后端并直接写入与此尺寸对应的 `<svg>` 根标签。
+    /// - `width`、`height`：画布尺寸（像素），仅写入标签属性，不做校验。
     pub fn with_size(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -99,10 +113,12 @@ impl SVGRenderer {
         }
     }
 
+    /// 在内容末尾追加 `</svg>` 结束标签；重复调用会追加多次并生成非法 SVG，通常只在收尾时调用一次。
     pub fn finalize(&mut self) {
         self.svg_content.push_str("</svg>");
     }
 
+    /// 返回当前累积的 SVG 文本切片，含根元素与已绘制图元；未 `finalize` 时缺少结束标签。
     pub fn get_svg(&self) -> &str {
         &self.svg_content
     }
@@ -162,11 +178,13 @@ impl Default for SVGRenderer {
     }
 }
 
+/// wasm32 目标的 WebGL 后端占位实现：不持有任何资源，`initialize` 直接返回错误，`is_available` 恒为 false。
 #[cfg(target_arch = "wasm32")]
 pub struct WebGLRenderer;
 
 #[cfg(target_arch = "wasm32")]
 impl WebGLRenderer {
+    /// 创建占位实例，不初始化任何 WebGL 资源。
     pub fn new() -> Self {
         Self
     }
@@ -212,11 +230,13 @@ impl RenderBackend for WebGLRenderer {
     }
 }
 
+/// Windows Direct2D 后端占位实现：不持有设备资源，`initialize` 直接返回错误，`is_available` 恒为 false。
 #[cfg(target_os = "windows")]
 pub struct Direct2DRenderer;
 
 #[cfg(target_os = "windows")]
 impl Direct2DRenderer {
+    /// 创建占位实例，不申请 Direct2D 设备与渲染目标。
     pub fn new() -> Self {
         Self
     }
@@ -262,11 +282,13 @@ impl RenderBackend for Direct2DRenderer {
     }
 }
 
+/// macOS Metal 后端占位实现：不持有设备资源，`initialize` 直接返回错误，`is_available` 恒为 false。
 #[cfg(target_os = "macos")]
 pub struct MetalRenderer;
 
 #[cfg(target_os = "macos")]
 impl MetalRenderer {
+    /// 创建占位实例，不申请 Metal 设备与命令队列。
     pub fn new() -> Self {
         Self
     }
@@ -312,11 +334,13 @@ impl RenderBackend for MetalRenderer {
     }
 }
 
+/// Linux/FreeBSD OpenGL 后端占位实现：不持有上下文资源，`initialize` 直接返回错误，`is_available` 恒为 false。
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub struct OpenGLRenderer;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 impl OpenGLRenderer {
+    /// 创建占位实例，不创建 OpenGL 上下文与窗口表面。
     pub fn new() -> Self {
         Self
     }

@@ -1,16 +1,26 @@
+//! STEP（ISO 10303-21）导出实现：把 `Document` 的实体写成 AP203/AP214/AP242 通用的交换文本。
+//! 输出为「ISO-10303-21 头 + DATA 段 + 结束标记」的完整文本，实体编号从 `#1` 起按写入顺序递增；
+//! 点、线、圆、圆弧、椭圆、B 样条与折线会被写成对应的几何记录（折线按相邻顶点拆成多段 LINE），
+//! 其余几何（NURBS、文本、标注、填充等）只写出一行占位 `ENTITY` 记录。
 use crate::data_structure::{Document, Entity, ObjectId, EntityType, EntityGeometry, Layer};
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS, Curve};
 use std::io::{Write, BufWriter};
 use std::fs::File;
 use crate::io::{Exporter, Error, ExportOptions};
 
+/// STEP 应用协议（AP）版本标记。
 #[derive(Debug, Clone, PartialEq)]
 pub enum STEPVersion {
+    /// AP203：配置控制设计。
     AP203,
+    /// AP214：默认取值。
     AP214,
+    /// AP242：在 AP214 基础上加入 PMI 与模型基定义。
     AP242,
 }
 
+/// STEP 导出器：实现 `Exporter`，把 `Document` 序列化为 ISO 10303-21 文本。
+/// 导出只读取文档，不修改传入的 `doc`；文本可写入文件，也可直接从内存取回。
 pub struct STEPExporter {
     version: STEPVersion,
     entity_counter: usize,
@@ -19,6 +29,7 @@ pub struct STEPExporter {
 }
 
 impl STEPExporter {
+    /// 创建导出器，协议版本标记默认为 AP214，实体编号从 `#1` 开始。
     pub fn new() -> Self {
         Self {
             version: STEPVersion::AP214,
@@ -28,6 +39,8 @@ impl STEPExporter {
         }
     }
 
+    /// 指定协议版本标记创建导出器。
+    /// - `version`：写入实例的版本；当前输出固定使用 CONFIG_CONTROL_DESIGN schema，该字段仅作记录。
     pub fn with_version(version: STEPVersion) -> Self {
         Self {
             version,
@@ -251,6 +264,7 @@ impl Exporter for STEPExporter {
 }
 
 impl STEPExporter {
+    /// 返回本格式的注册信息：扩展名 `step`、名称 STEP、文本（非二进制），版本列表为 AP203/AP214/AP242。
     pub fn get_format_info(&self) -> crate::io::FormatInfo {
         crate::io::FormatInfo::new(
             "step",
@@ -263,6 +277,18 @@ impl STEPExporter {
         .with_version("AP242")
     }
 
+    /// 把文档导出为 STEP 文本，不写盘。
+    /// - `doc`：待导出的文档；只读取文档名与实体，不修改文档本身。
+    /// 返回 `Ok`：完整的 ISO-10303-21 文本；`Err` 目前不会被触发，接口为兼容导出框架保留。
+    /// 文件头的时间戳取当前 UTC 时间，因此同一文档两次导出的头部可能不同。
+    /// # 示例
+    /// ```
+    /// use cadrs::Document;
+    /// use cadrs::io::step_exporter::STEPExporter;
+    /// let doc = Document::new("Test".to_string());
+    /// let text = STEPExporter::new().export_to_string(&doc).unwrap();
+    /// assert!(text.contains("ISO-10303-21"));
+    /// ```
     pub fn export_to_string(&self, doc: &Document) -> Result<String, String> {
         let mut exporter = STEPExporter::new();
 

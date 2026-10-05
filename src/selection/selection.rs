@@ -1,16 +1,26 @@
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
+/// 选择方式，决定如何由拾取点（世界坐标）构造选择结果。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SelectionMode {
+    /// 点选：命中拾取点的单个实体。
     Point,
+    /// 窗口选择：只选中完全落在选择框内的实体，相交但未全含者不算。
     Window,
+    /// 交叉选择：与选择框相交或落在框内的实体都算。
     Crossing,
+    /// 栏选：与折线栏相交的实体。
     Fence,
+    /// 全选：文档中全部实体。
     All,
+    /// 上一次的选择集。
     Previous,
+    /// 最近创建的一个实体。
     Last,
+    /// 隐含选择：由其他操作推断出的实体。
     Implied,
+    /// 不使用选择，返回空结果。
     None,
 }
 
@@ -20,20 +30,34 @@ impl Default for SelectionMode {
     }
 }
 
+/// 选择操作选项，用于调整后续选择行为。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SelectionOption {
+    /// 把结果加入现有选择集。
     Add,
+    /// 从选择集中移除结果。
     Remove,
+    /// 只允许选中一个实体。
     Single,
+    /// 允许选中多个实体。
     Multiple,
+    /// 输出选择过程的详细信息。
     Verbose,
 }
 
+/// 选择过滤器：限制可被选中的实体类型、图层与颜色。
+///
+/// 各字段为空表示该维度不加限制；多个维度同时给出时按「与」关系判定，
+/// 任一维不满足即整体不匹配。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectionFilter {
+    /// 允许的实体类型名，需与 `EntityType` 的调试名一致（如 `"Line"`）；空表示不限。
     pub entity_types: Vec<String>,
+    /// 允许的图层标识字符串（`ObjectId::to_string` 的结果）；空表示不限。
     pub layers: Vec<String>,
+    /// 允许的 RGB 颜色（每通道 0–255），与实体属性 `color` 的 `"r,g,b"` 文本比较；空表示不限。
     pub colors: Vec<(u8, u8, u8)>,
+    /// 允许的线型名；当前匹配逻辑尚未使用该字段。
     pub linetypes: Vec<String>,
 }
 
@@ -49,10 +73,14 @@ impl Default for SelectionFilter {
 }
 
 impl SelectionFilter {
+    /// 创建不做任何限制的过滤器（各字段为空，可匹配任意实体）。
     pub fn all() -> Self {
         Self::default()
     }
 
+    /// 创建只按实体类型过滤的过滤器，其余维度不限。
+    ///
+    /// - `types`：允许的类型名，需与 `EntityType` 的调试名完全一致（如 `"Line"`）。
     pub fn with_entity_types(types: Vec<String>) -> Self {
         Self {
             entity_types: types,
@@ -60,6 +88,9 @@ impl SelectionFilter {
         }
     }
 
+    /// 创建只按图层过滤的过滤器，其余维度不限。
+    ///
+    /// - `layers`：允许的图层标识字符串（`ObjectId::to_string` 的结果）。
     pub fn with_layers(layers: Vec<String>) -> Self {
         Self {
             layers,
@@ -67,6 +98,10 @@ impl SelectionFilter {
         }
     }
 
+    /// 判断实体是否通过过滤器。
+    ///
+    /// 类型、图层、颜色三个维度全部满足才返回 `true`；某维度列表为空表示不限制。
+    /// 颜色维度要求实体属性 `color` 形如 `"r,g,b"` 且三个分量都能解析为 `u8`，否则视为不匹配。
     pub fn matches(&self, entity: &super::super::data_structure::Entity) -> bool {
         if !self.entity_types.is_empty() {
             let entity_type = format!("{:?}", entity.entity_type);
@@ -103,6 +138,10 @@ impl SelectionFilter {
     }
 }
 
+/// 选择集：一组实体标识（`ObjectId`）、选择方式与选中时间。
+///
+/// 只保存标识、不持有实体数据；重复加入同一标识会被忽略。`last_selected`
+/// 记录最近加入的实体，供「上一次选中」类命令使用。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectionSet {
     entities: Vec<super::super::data_structure::ObjectId>,
@@ -123,10 +162,12 @@ impl Default for SelectionSet {
 }
 
 impl SelectionSet {
+    /// 创建空选择集，选择方式为 [`SelectionMode::Point`]。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 创建空选择集并指定选择方式。
     pub fn with_mode(mode: SelectionMode) -> Self {
         Self {
             mode,
@@ -134,6 +175,9 @@ impl SelectionSet {
         }
     }
 
+    /// 加入一个实体标识；已在集合中时不做任何改动。
+    ///
+    /// 副作用：成功加入时把它记为「最后选中」并刷新选中时间。
     pub fn add(&mut self, entity_id: super::super::data_structure::ObjectId) {
         if !self.entities.contains(&entity_id) {
             self.entities.push(entity_id.clone());
@@ -142,22 +186,26 @@ impl SelectionSet {
         }
     }
 
+    /// 批量加入实体，逐个走 [`SelectionSet::add`] 的去重逻辑。
     pub fn add_multiple(&mut self, entity_ids: &[super::super::data_structure::ObjectId]) {
         for id in entity_ids {
             self.add(id.clone());
         }
     }
 
+    /// 移除指定实体；该实体不在集合中时静默无操作。
     pub fn remove(&mut self, entity_id: &super::super::data_structure::ObjectId) {
         self.entities.retain(|id| id != entity_id);
     }
 
+    /// 批量移除实体。
     pub fn remove_multiple(&mut self, entity_ids: &[super::super::data_structure::ObjectId]) {
         for id in entity_ids {
             self.remove(id);
         }
     }
 
+    /// 清空选择集并清除「最后选中」记录（选中时间保持不变）。
     pub fn clear(&mut self) {
         self.entities.clear();
         self.last_selected = None;

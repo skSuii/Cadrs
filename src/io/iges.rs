@@ -1,14 +1,23 @@
+//! IGES（初始图形交换规范）文本导入实现，可识别 5.0 / 5.1 / 5.2 / 5.3 的版本头。
+//! 按 S/G/D/P/T 段推进：先从目录段（D 段，每行 80 列定长）读取目录条目，
+//! 再按条目顺序匹配参数段（P 段）的参数列表，最后由 IGES 实体类型号（110 直线、100 圆弧、102 圆锥曲线、116 点、
+//! 144/146 NURBS 曲线与曲面等）转换为 `Document` 中的几何实体。只读、不写回；未知类型号与解析失败的条目会被跳过。
 use crate::data_structure::{Document, Block, Layer, Entity, ObjectId, EntityType, EntityGeometry};
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS};
 use std::io::{BufReader, BufRead};
 use crate::io::Error;
 use std::collections::HashMap;
 
+/// IGES 文件版本，按文件首行中出现的版本串标注。
 #[derive(Debug, Clone, PartialEq)]
 pub enum IGESVersion {
+    /// IGES 5.0。
     V5_0,
+    /// IGES 5.1。
     V5_1,
+    /// IGES 5.2。
     V5_2,
+    /// IGES 5.3，`IGESImporter::new` 的默认取值。
     V5_3,
 }
 
@@ -511,17 +520,22 @@ impl<'a> IGESParser<'a> {
     }
 }
 
+/// IGES 导入器：实现 `Importer`，把 IGES 文本解析为 `Document`。
+/// 解析是容错式的：目录段中长度不足 80 列或类型号为 0 的行会被丢弃，不会让整份导入失败。
 pub struct IGESImporter {
     version: IGESVersion,
 }
 
 impl IGESImporter {
+    /// 创建导入器，版本标记默认为 IGES 5.3。
     pub fn new() -> Self {
         Self {
             version: IGESVersion::V5_3,
         }
     }
 
+    /// 指定版本标记创建导入器。
+    /// - `version`：写入实例的版本；当前解析流程不读取该字段，实际版本仍由文件内容判定。
     pub fn with_version(version: IGESVersion) -> Self {
         Self { version }
     }
@@ -533,6 +547,7 @@ impl IGESImporter {
         Ok(parser.get_document())
     }
 
+    /// 返回本格式的注册信息：扩展名 `iges`、名称 IGES、文本（非二进制），版本列表为 5.0/5.1/5.3。
     pub fn get_format_info(&self) -> crate::io::FormatInfo {
         crate::io::FormatInfo::new(
             "iges",

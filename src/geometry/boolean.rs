@@ -1,3 +1,12 @@
+//! 布尔运算：对闭合区域做并（Union）、交（Intersection）、差（Difference）、异或（ExclusiveOr），
+//! 并提供线—圆、圆—圆、多边形之间的成对入口。
+//!
+//! 本模块在 `geometry` 中由 `boolean` feature 控制：启用时基于 clipper2 完成多边形布尔运算
+//! （`FillRule::NonZero`，圆按 64 边形离散），未启用时同名入口返回 `success = false` 并把输入
+//! 原样回传。辅助判定函数 `point_in_polygon`、`polygon_area`、`polygons_overlap` 与 feature 无关。
+//!
+//! 约定：参与运算的折线应闭合且顶点数不少于 3；运算只使用世界坐标的 x、y，z 分量忽略。
+
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, Curve};
 use crate::geometry::intersection::{IntersectionResult, IntersectionPoint};
 use std::cmp::Ordering;
@@ -7,27 +16,42 @@ use clipper2::{Clipper, FillRule, Path, Paths, Point as ClipperPoint};
 #[cfg(feature = "boolean")]
 use crate::geometry::extended_geometry::Point as Point2D;
 
+/// 布尔运算类型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum BooleanOperation {
+    /// 并集：合并所有区域，重叠部分只保留一次。
     Union,
+    /// 交集：只保留所有区域的公共部分。
     Intersection,
+    /// 差集：从主体区域中减去其余区域。
     Difference,
+    /// 异或：保留只被奇数个区域覆盖的部分。
     ExclusiveOr,
 }
 
+/// 布尔运算的结果。
 #[derive(Debug, Clone)]
 pub struct BooleanResult {
+    /// 结果实体；失败时通常是输入实体的回传副本，顺序与内部路径遍历顺序一致。
     pub entities: Vec<GeometricEntity>,
+    /// 是否成功；输入为空但合法时可能为 `true`，底层失败或缺少 feature 时为 `false`。
     pub success: bool,
+    /// 结果说明或失败原因（英文，形如 `Union completed with 2 result polygons`）。
     pub message: String,
 }
 
+/// 参与或产出布尔运算的几何实体。
 #[derive(Debug, Clone)]
 pub enum GeometricEntity {
+    /// 直线段。
     Line(Line),
+    /// 圆弧。
     Arc(Arc),
+    /// 整圆。
     Circle(Circle),
+    /// 折线；布尔运算要求其顶点数不少于 3 并按顺序围成闭合环。
     Polyline(Polyline),
+    /// 组合实体，按嵌套顺序依次参与运算。
     Composite(Vec<GeometricEntity>),
 }
 
@@ -55,18 +79,26 @@ impl ClipperAdapter {
     }
 }
 
+/// 布尔运算引擎：无内部状态，可重复使用；所有方法只读取输入，不修改传入实体。
 pub struct BooleanEngine;
 
 impl BooleanEngine {
+    /// 创建引擎实例；不持有任何额外状态。
     pub fn new() -> Self {
         Self {}
     }
 
+    /// 求全部输入实体的并集。
+    ///
+    /// - `shapes`：参与运算的实体；空切片视为成功并返回空结果。
+    ///
+    /// 全部为折线时走 clipper2 路径，否则退化为逐实体离散的简化运算；输入不被修改。
     #[cfg(feature = "boolean")]
     pub fn union_shapes(&self, shapes: &[GeometricEntity]) -> BooleanResult {
         self.boolean_operation(shapes, BooleanOperation::Union)
     }
 
+    /// 未启用 `boolean` feature 时的降级实现：原样回传输入并置 `success = false`。
     #[cfg(not(feature = "boolean"))]
     pub fn union_shapes(&self, shapes: &[GeometricEntity]) -> BooleanResult {
         BooleanResult {
@@ -76,11 +108,17 @@ impl BooleanEngine {
         }
     }
 
+    /// 求全部输入实体的交集（公共区域）。
+    ///
+    /// - `shapes`：参与运算的实体；空切片视为成功并返回空结果。
+    ///
+    /// 结果只保留顶点数不少于 3 的闭合折线，输入不被修改。
     #[cfg(feature = "boolean")]
     pub fn intersect_shapes(&self, shapes: &[GeometricEntity]) -> BooleanResult {
         self.boolean_operation(shapes, BooleanOperation::Intersection)
     }
 
+    /// 未启用 `boolean` feature 时的降级实现：原样回传输入并置 `success = false`。
     #[cfg(not(feature = "boolean"))]
     pub fn intersect_shapes(&self, shapes: &[GeometricEntity]) -> BooleanResult {
         BooleanResult {
@@ -90,12 +128,19 @@ impl BooleanEngine {
         }
     }
 
+    /// 从主体实体中减去工具实体。
+    ///
+    /// - `subject`：主体区域。
+    /// - `tool`：工具区域；当前实现未使用该参数，实际只对 `subject` 求差集。
+    ///
+    /// 结果与输入实体均不被修改。
     #[cfg(feature = "boolean")]
     pub fn subtract_shapes(&self, subject: &[GeometricEntity], tool: &[GeometricEntity]) -> BooleanResult {
         let result = self.boolean_operation(subject, BooleanOperation::Difference);
         result
     }
 
+    /// 未启用 `boolean` feature 时的降级实现：原样回传主体并置 `success = false`。
     #[cfg(not(feature = "boolean"))]
     pub fn subtract_shapes(&self, subject: &[GeometricEntity], _tool: &[GeometricEntity]) -> BooleanResult {
         BooleanResult {
@@ -310,10 +355,17 @@ impl BooleanEngine {
         }
     }
 
+    /// 求直线与圆的并集。
+    ///
+    /// 直线与圆都被离散为路径后参与运算；圆半径不为正时返回 `success = false` 并回传直线。
     pub fn line_circle_union(&self, line: &Line, circle: &Circle) -> BooleanResult {
         self.simple_line_circle_operation(line, circle, BooleanOperation::Union)
     }
 
+    /// 求直线段与圆的交点。
+    ///
+    /// 每个交点以一条起止点相同的退化 `Line` 返回；无交点时 `success = false` 且 `entities` 为空。
+    /// 输入直线与圆均不被修改。
     pub fn line_circle_intersection(&self, line: &Line, circle: &Circle) -> BooleanResult {
         let result = crate::geometry::intersection::intersect_line_circle(line.clone(), circle.clone());
         match result {
@@ -343,6 +395,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 用圆裁剪直线。
+    ///
+    /// 当前实现只判断是否相交，返回的始终是原直线本身（相交与否体现在 `message` 中），
+    /// `success` 恒为 `true`；输入直线不被修改。
     pub fn line_circle_difference(&self, line: &Line, circle: &Circle) -> BooleanResult {
         let intersection = self.line_circle_intersection(line, circle);
         if intersection.entities.is_empty() {
@@ -426,6 +482,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 求两个圆的并集。
+    ///
+    /// 结果形状接近圆时还原为 `GeometricEntity::Circle`，否则以不少于 3 个顶点的闭合折线返回；
+    /// 半径无效或底层失败时回传两个输入圆并置 `success = false`。
     #[cfg(feature = "boolean")]
     pub fn circle_circle_union(&self, circle1: &Circle, circle2: &Circle) -> BooleanResult {
         let path1 = Self::circle_to_path(&circle1.center, circle1.radius);
@@ -513,6 +573,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 求两圆的公共区域（透镜形）。
+    ///
+    /// 相切时返回一个半径为 0 的退化圆；有两个交点时返回两段由交点与圆心三点确定的圆弧
+    /// （分别沿两个圆走）；无有效交点时 `success = false` 且 `entities` 为空。
     #[cfg(feature = "boolean")]
     pub fn circle_circle_intersection(&self, circle1: &Circle, circle2: &Circle) -> BooleanResult {
         let result = crate::geometry::intersection::intersect_circle_circle(circle1.clone(), circle2.clone());
@@ -546,6 +610,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 求第一个圆减去第二个圆的结果。
+    ///
+    /// 当前实现只判断两圆是否有两个交点，返回的始终是第一个圆本身（是否被切割体现在 `message`
+    /// 中），`success` 恒为 `true`；输入圆不被修改。
     pub fn circle_circle_difference(&self, circle1: &Circle, circle2: &Circle) -> BooleanResult {
         let result = crate::geometry::intersection::intersect_circle_circle(circle1.clone(), circle2.clone());
         match result {
@@ -564,6 +632,12 @@ impl BooleanEngine {
         }
     }
 
+    /// 合并多个多边形。
+    ///
+    /// - `polygons`：参与合并的多边形；顶点数少于 3 的会被忽略，空输入返回成功且结果为空，
+    ///   只有一个输入时原样回传该多边形。
+    ///
+    /// 结果均为不少于 3 个顶点的闭合折线；`success` 取决于是否产出有效多边形。
     #[cfg(feature = "boolean")]
     pub fn polygon_union(&self, polygons: &[Polyline]) -> BooleanResult {
         if polygons.is_empty() {
@@ -633,6 +707,7 @@ impl BooleanEngine {
         }
     }
 
+    /// 未启用 `boolean` feature 时的降级实现：把各多边形顶点首尾拼接成一条折线返回。
     #[cfg(not(feature = "boolean"))]
     pub fn polygon_union(&self, polygons: &[Polyline]) -> BooleanResult {
         let mut combined = if let Some(first) = polygons.first() {
@@ -668,6 +743,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 求两个多边形的交集。
+    ///
+    /// 结果只保留不少于 3 个顶点的闭合折线；输入无效、无交集或未启用 `boolean` feature 时
+    /// `success = false` 并返回空的 `entities`。输入多边形不被修改。
     pub fn polygon_intersection(&self, poly1: &Polyline, poly2: &Polyline) -> BooleanResult {
         #[cfg(feature = "boolean")]
         {
@@ -724,6 +803,10 @@ impl BooleanEngine {
         }
     }
 
+    /// 从 `subject` 中减去 `tool`。
+    ///
+    /// 成功时结果只含不少于 3 个顶点的闭合折线；输入无效、底层失败或未启用 `boolean` feature
+    /// 时原样回传 `subject` 并置 `success = false`。输入多边形不被修改。
     pub fn polygon_difference(&self, subject: &Polyline, tool: &Polyline) -> BooleanResult {
         #[cfg(feature = "boolean")]
         {
@@ -787,6 +870,27 @@ impl Default for BooleanEngine {
     }
 }
 
+/// 判断点是否位于多边形内部（射线交叉计数法）。
+///
+/// - `point`：待测点，只使用 x、y 坐标。
+/// - `polygon`：按顺序给出顶点的多边形，隐式闭合；顶点数少于 3 时直接返回 `false`。
+///
+/// 返回点是否落在内部；点恰好落在边或顶点上时结果不稳定，需要容差时由调用方处理。
+///
+/// # 示例
+/// ```
+/// use cadrs::geometry::Point;
+/// use cadrs::geometry::extended_geometry::Point as Point2D;
+/// use cadrs::geometry::Polyline;
+/// use cadrs::geometry::boolean::point_in_polygon;
+///
+/// let square = Polyline {
+///     vertices: vec![Point2D::new(0.0, 0.0), Point2D::new(10.0, 0.0),
+///                    Point2D::new(10.0, 10.0), Point2D::new(0.0, 10.0)],
+///     is_closed: true,
+/// };
+/// assert!(point_in_polygon(Point::new2d(5.0, 5.0), &square));
+/// ```
 #[inline]
 pub fn point_in_polygon(point: Point, polygon: &Polyline) -> bool {
     let mut inside = false;
@@ -812,6 +916,25 @@ pub fn point_in_polygon(point: Point, polygon: &Polyline) -> bool {
     inside
 }
 
+/// 计算多边形的面积（鞋带公式）。
+///
+/// - `polygon`：按顺序给出顶点的多边形，隐式闭合，无需重复首顶点。
+///
+/// 返回世界坐标单位下的面积（平方单位），与顶点环绕方向无关（取绝对值）；顶点数少于 3 时
+/// 返回 `0.0`。
+///
+/// # 示例
+/// ```
+/// use cadrs::geometry::extended_geometry::Point;
+/// use cadrs::geometry::Polyline;
+/// use cadrs::geometry::boolean::polygon_area;
+///
+/// let triangle = Polyline {
+///     vertices: vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(5.0, 10.0)],
+///     is_closed: true,
+/// };
+/// assert!((polygon_area(&triangle) - 50.0).abs() < 0.01);
+/// ```
 #[inline]
 pub fn polygon_area(polygon: &Polyline) -> f64 {
     let mut area: f64 = 0.0;
@@ -829,6 +952,10 @@ pub fn polygon_area(polygon: &Polyline) -> f64 {
     area.abs() / 2.0
 }
 
+/// 判断两个多边形是否重叠。
+///
+/// 只要任一多边形的某个顶点落在另一个多边形内部即返回 `true`；仅边相交而顶点互不包含
+/// （例如两个交叉的细长多边形）时返回 `false`。
 #[inline]
 pub fn polygons_overlap(poly1: &Polyline, poly2: &Polyline) -> bool {
     for point in &poly1.vertices {

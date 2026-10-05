@@ -749,8 +749,26 @@ impl SheetSet {
         }
     }
 
+    /// 把标识解析为图纸 id：既接受图纸 id，也接受图纸编号（如 `A-101`）。
+    fn resolve_sheet_id(&self, id_or_number: &str) -> Option<String> {
+        if self.sheets.contains_key(id_or_number) {
+            return Some(id_or_number.to_string());
+        }
+        self.find_sheet_by_number(id_or_number)
+            .map(|s| s.id.clone())
+    }
+
+    /// 调整图纸在图纸列表中的次序。
+    ///
+    /// - `sheet_id`：图纸 id 或图纸编号（如 `A-101`）。
+    /// - `new_index`：目标下标（从 0 开始）；越界返回 `false` 且不修改任何状态。
+    ///
+    /// 返回是否移动成功。移动后 `sheet_order` 中保存的仍是图纸 id。
     pub fn move_sheet(&mut self, sheet_id: &str, new_index: usize) -> bool {
-        if let Some(current_index) = self.sheet_order.iter().position(|id| id == sheet_id) {
+        let Some(sheet_id) = self.resolve_sheet_id(sheet_id) else {
+            return false;
+        };
+        if let Some(current_index) = self.sheet_order.iter().position(|id| *id == sheet_id) {
             if new_index >= self.sheet_order.len() {
                 return false;
             }
@@ -764,19 +782,26 @@ impl SheetSet {
         }
     }
 
+    /// 按给定次序重排全部图纸。
+    ///
+    /// - `order`：图纸 id 或图纸编号的完整序列；长度必须与当前图纸数一致，
+    ///   且每个元素都能解析到已存在的图纸，否则返回 `false` 且不修改任何状态。
+    ///
+    /// 返回是否重排成功；成功后 `sheet_order` 中保存的是图纸 id。
     pub fn reorder_sheets(&mut self, order: &[&str]) -> bool {
         if order.len() != self.sheet_order.len() {
             return false;
         }
 
-        let new_order: Vec<String> = order.iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        for id in &new_order {
-            if !self.sheets.contains_key(id) {
+        let mut new_order: Vec<String> = Vec::with_capacity(order.len());
+        for id_or_number in order {
+            let Some(id) = self.resolve_sheet_id(id_or_number) else {
+                return false;
+            };
+            if new_order.contains(&id) {
                 return false;
             }
+            new_order.push(id);
         }
 
         self.sheet_order = new_order;
@@ -784,24 +809,34 @@ impl SheetSet {
         true
     }
 
+    /// 复制一张图纸。
+    ///
+    /// - `source_id`：源图纸的 id 或图纸编号（如 `A-101`）。
+    /// - `new_number`：新图纸编号；为空或与原编号重复时返回 `None`。
+    ///
+    /// 新图纸沿用源的标题与自定义属性，版本号重置为 `A`，创建 / 修改时间取当前时间，
+    /// 并追加到图纸列表末尾。返回新图纸的 id；源图纸不存在时返回 `None`。
     pub fn duplicate_sheet(&mut self, source_id: &str, new_number: &str) -> Option<String> {
-        if let Some(source_sheet) = self.sheets.get(source_id) {
-            let mut new_sheet = source_sheet.clone();
-            new_sheet.properties.number = new_number.to_string();
-            new_sheet.properties.revision = "A".to_string();
-            new_sheet.properties.creation_date = SystemTime::now();
-            new_sheet.properties.modification_date = SystemTime::now();
-            new_sheet.id = uuid::Uuid::new_v4().to_string();
-            new_sheet.is_selected = false;
+        let source_id = self.resolve_sheet_id(source_id)?;
 
-            self.sheets.insert(new_sheet.id.clone(), new_sheet.clone());
-            self.sheet_order.push(new_sheet.id.clone());
-
-            self.is_modified = true;
-            Some(new_sheet.id)
-        } else {
-            None
+        let trimmed_number = new_number.trim();
+        if trimmed_number.is_empty() || self.find_sheet_by_number(trimmed_number).is_some() {
+            return None;
         }
+
+        let mut new_sheet = self.sheets.get(&source_id)?.clone();
+        new_sheet.properties.number = trimmed_number.to_string();
+        new_sheet.properties.revision = "A".to_string();
+        new_sheet.properties.creation_date = SystemTime::now();
+        new_sheet.properties.modification_date = SystemTime::now();
+        new_sheet.id = uuid::Uuid::new_v4().to_string();
+        new_sheet.is_selected = false;
+
+        self.sheets.insert(new_sheet.id.clone(), new_sheet.clone());
+        self.sheet_order.push(new_sheet.id.clone());
+
+        self.is_modified = true;
+        Some(new_sheet.id)
     }
 
     pub fn add_resource_file(&mut self, resource_file: ResourceFile) {

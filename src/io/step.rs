@@ -1,13 +1,21 @@
+//! STEP（ISO 10303-21，AP203/AP214/AP242）文本导入实现。
+//! 按行扫描 HEADER/DATA/ENDSEC 段，把 `#id = TYPE(params);` 形式的实体登记到实体表，
+//! 再按类型名（CARTESIAN_POINT、LINE、CIRCLE、ELLIPSE、B_SPLINE_CURVE 等）转成 `Document` 中的几何实体。
+//! 只读、不写回；单条实体参数不足时退化为占位几何，无法识别的类型直接跳过，都不会让整个导入失败。
 use crate::data_structure::{Document, Block, Layer, Entity, ObjectId, EntityType, EntityGeometry};
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS};
 use std::io::{BufReader, BufRead, Read};
 use crate::io::Error;
 use std::collections::HashMap;
 
+/// STEP 应用协议（AP）版本，用于标注文件遵循的 schema。
 #[derive(Debug, Clone, PartialEq)]
 pub enum STEPVersion {
+    /// AP203：配置控制设计，只涵盖几何与装配结构。
     AP203,
+    /// AP214：汽车行业的扩展协议，导入器与导出器的默认取值。
     AP214,
+    /// AP242：在 AP214 基础上加入 PMI 与模型基定义。
     AP242,
 }
 
@@ -29,15 +37,38 @@ struct STEPParser<'a> {
 }
 
 impl<'a> STEPParser<'a> {
+    /// 创建解析器。
+    ///
+    /// 若文件没有 `HEADER;` 段（例如直接给出 `#id = TYPE(...);` 的片段），
+    /// 会自动从第一条实体行开始解析，使片段输入同样可用。
     fn new(lines: Vec<&'a str>) -> Self {
-        Self {
+        // 无 HEADER 段的片段：从第一条实体行开始解析，构造时即完成解析，
+        // 便于直接检查 entities / entity_map（完整文件仍由 parse() 驱动）。
+        let has_header = lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("HEADER"));
+        let first_entity = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with('#'));
+
+        let mut parser = Self {
             lines,
-            current_line: 0,
+            current_line: if has_header {
+                0
+            } else {
+                first_entity.unwrap_or(0)
+            },
             entities: Vec::new(),
             entity_params: HashMap::new(),
             entity_map: HashMap::new(),
             current_entity: None,
+        };
+
+        if !has_header && first_entity.is_some() {
+            let _ = parser.parse_data();
         }
+
+        parser
     }
 
     fn parse_version(&self) -> STEPVersion {
@@ -481,6 +512,11 @@ impl<'a> STEPParser<'a> {
         self.extract_point(entity_data)
     }
 
+    /// 解析整份文件。
+    ///
+    /// 兼容两种布局：带 `HEADER;` / `DATA;` / `ENDSEC;` 的完整 ISO 10303-21 文件，
+    /// 以及直接给出 `#id = TYPE(...);` 实体行的片段（片段中实体行按 DATA 段处理，
+    /// 这样单元测试或人工摘录的片段也能直接解析）。
     fn parse(&mut self) -> Result<(), String> {
         self.current_line = 0;
 
@@ -490,6 +526,9 @@ impl<'a> STEPParser<'a> {
             if self.is_header_section(line) {
                 self.parse_header()?;
             } else if self.is_data_section(line) {
+                self.parse_data()?;
+            } else if line.starts_with('#') {
+                // 无 DATA 段标记：按数据段解析实体行
                 self.parse_data()?;
             }
 
@@ -512,17 +551,22 @@ impl<'a> STEPParser<'a> {
     }
 }
 
+/// STEP 导入器：实现 `Importer`，把 ISO 10303-21 文本解析为 `Document`。
+/// 以 `/*` 开头的行按注释跳过；容错解析，不因个别实体异常而整体失败。
 pub struct STEPImporter {
     version: STEPVersion,
 }
 
 impl STEPImporter {
+    /// 创建导入器，协议版本标记默认为 AP214。
     pub fn new() -> Self {
         Self {
             version: STEPVersion::AP214,
         }
     }
 
+    /// 指定协议版本标记创建导入器。
+    /// - `version`：写入实例的版本；当前解析流程不读取该字段，行为与 `new` 相同。
     pub fn with_version(version: STEPVersion) -> Self {
         Self { version }
     }
@@ -543,6 +587,13 @@ impl STEPImporter {
         STEPVersion::AP214
     }
 
+    /// 返回本格式的注册信息：扩展名 `step`、名称 STEP、文本（非二进制），版本列表为 AP203/AP214/AP242。
+    /// # 示例
+    /// ```
+    /// use cadrs::io::step::STEPImporter;
+    /// use cadrs::io::Importer;
+    /// assert!(STEPImporter::new().can_import("stp"));
+    /// ```
     pub fn get_format_info(&self) -> crate::io::FormatInfo {
         crate::io::FormatInfo::new(
             "step",

@@ -1,3 +1,7 @@
+//! 基于 wgpu 的 GPU 渲染后端：`WGPURenderer` 管理 wgpu 实例、设备、队列、窗口表面与渲染管线，
+//! 把线段与折线图元提交到表面呈现，顶点由内置 WGSL 着色器直接输出颜色。
+//! 整个模块在启用 `gpu` feature 时才编译；未成功附加表面时，绘制只会堆积在待提交顶点中。
+
 #[cfg(feature = "gpu")]
 use wgpu::{util::DeviceExt, Device, Queue, RenderPipeline};
 
@@ -27,6 +31,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// wgpu 渲染器：持有实例、设备、队列、表面、表面配置与渲染管线，并缓存本轮待提交的顶点。
+/// 使用流程为 `new` → `attach_surface`（异步）→ `resize` → 若干 `draw_*` → `present`；
+/// 未附加表面时 `present` 不产生任何输出，顶点会一直留在 `pending_vertices` 中。
 #[cfg(feature = "gpu")]
 #[derive(Debug)]
 pub struct WGPURenderer<'window> {
@@ -50,6 +57,8 @@ struct RenderVertex {
 
 #[cfg(feature = "gpu")]
 impl<'window> WGPURenderer<'window> {
+    /// 创建渲染器并初始化 wgpu 实例；设备、队列与表面留待 `attach_surface` 建立。
+    /// 尺寸暂为 1×1，待提交顶点为空。构造过程不会失败，返回值当前恒为 `Ok`。
     pub fn new() -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -71,6 +80,10 @@ impl<'window> WGPURenderer<'window> {
         })
     }
 
+    /// 异步为渲染器附加绘制目标并完成 GPU 初始化：创建表面、请求适配器与设备、
+    /// 按表面能力选择 sRGB 格式、配置表面并构建渲染管线。
+    /// - `target`：窗口或画布等表面目标，可转换为 wgpu 的 `SurfaceTarget`。
+    /// 返回 `Ok(())` 表示设备与管线已就绪；创建表面、找不到适配器或请求设备失败时返回错误描述。
     pub async fn attach_surface(
         &mut self,
         target: impl Into<wgpu::SurfaceTarget<'window>>,
@@ -199,6 +212,9 @@ impl<'window> WGPURenderer<'window> {
         Ok(())
     }
 
+    /// 调整输出尺寸并重新配置表面，宽高会被夹到至少 1，避免出现零尺寸表面。
+    /// - `width`、`height`：新的像素尺寸。
+    /// 尚未附加表面（无设备/表面/配置）时只记录尺寸，不做实际配置。
     pub fn resize(&mut self, width: u32, height: u32) {
         self.current_width = width.max(1);
         self.current_height = height.max(1);
@@ -211,10 +227,15 @@ impl<'window> WGPURenderer<'window> {
         }
     }
 
+    /// 清空待提交顶点列表，开始新的一帧；RGBA 参数为接口兼容而保留，当前不影响清屏颜色
+    /// （`present` 始终以白色清屏），也不会立即擦除屏幕上已呈现的画面。
     pub fn clear(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {
         self.pending_vertices.clear();
     }
 
+    /// 追加一条线段到待提交顶点，顶点着色器不做矩阵变换，坐标即裁剪空间坐标（x、y 取 -1.0~1.0）。
+    /// 只有调用 `present` 后才会显示；追加的顶点在下一次 `clear` 前一直保留。
+    /// - `color`：RGBA 颜色，各分量取 0.0~1.0。
     pub fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: &[f32; 4]) {
         let v1 = RenderVertex {
             position: [x1, y1],
@@ -228,6 +249,9 @@ impl<'window> WGPURenderer<'window> {
         self.pending_vertices.push(v2);
     }
 
+    /// 用首尾相接的线段逼近圆，逐段追加到待提交顶点。
+    /// - `cx`、`cy`：圆心，`r`：半径，均为裁剪空间单位。
+    /// - `segments`：分段数，小于 32 时按 32 处理，分段越多圆周越平滑。
     pub fn draw_circle(&mut self, cx: f32, cy: f32, r: f32, color: &[f32; 4], segments: u32) {
         let segments = segments.max(32);
 
@@ -244,6 +268,9 @@ impl<'window> WGPURenderer<'window> {
         }
     }
 
+    /// 提交并呈现当前帧：把待提交顶点上传为顶点缓冲，以白色清屏后逐顶点绘制，最后交换表面缓冲。
+    /// 待提交顶点为空，或设备、队列、表面、配置任一缺失（如尚未 `attach_surface`）时直接返回，不报错。
+    /// 呈现后不会清空顶点列表，需自行调用 `clear`，否则下一次呈现会重复提交同一批顶点。
     pub fn present(&mut self) {
         if self.pending_vertices.is_empty() {
             return;
@@ -348,10 +375,13 @@ impl<'window> WGPURenderer<'window> {
         self.config = Some(config);
     }
 
+    /// 立即呈现当前帧，等价于调用 `present`。
     pub fn flush(&mut self) {
         self.present();
     }
 
+    /// 该后端在编译期可用（已启用 `gpu` feature），固定返回 `true`；
+    /// 实际能否出图仍取决于运行时的 `attach_surface` 是否成功。
     pub fn is_available() -> bool {
         true
     }
