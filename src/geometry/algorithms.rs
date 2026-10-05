@@ -1,7 +1,20 @@
+//! 几何算法模块：以自由函数形式提供常用平面几何运算。
+//!
+//! 这里集中放置距离计算、最近点、凸包、偏移、裁剪与延长等对图元的操作，避免把这些
+//! 过程性算法塞进图元类型本身；函数均不修改入参（图元按值或引用传入），长度单位为模型
+//! 空间单位，角度为弧度。多数函数只使用 `x`/`y`，属于二维算法，Z 坐标处理方式见各函数说明。
+//! 上层 Snap 捕捉、Dimension 标注与编辑命令可直接复用这些函数。
+
 use crate::geometry::{Point, Line, Circle, Arc};
 use crate::math::Vector2;
 use std::cmp::Ordering;
 
+/// 返回点到线段的最近距离，非负。
+///
+/// - `point`：查询点，仅使用其 `x`/`y`。
+/// - `line`：目标线段，最近点被限制在线段范围内，因此点位于端点外侧时取到最近端点的距离。
+///
+/// 线段长度小于 `1e-10` 时退化为点到 `start` 的距离。
 #[inline]
 pub fn distance_point_to_line(point: Point, line: Line) -> f64 {
     let start = line.start;
@@ -26,12 +39,26 @@ pub fn distance_point_to_line(point: Point, line: Line) -> f64 {
     point.distance_to(&closest)
 }
 
+/// 返回点到圆周（而非圆面）的距离，非负。
+///
+/// 圆心处的点得到最大距离 `radius`；点在圆内、圆外都会返回其到圆周的最短距离，
+/// 判定不区分内外。计算使用三维距离，故查询点与圆心的 Z 差异会影响结果。
+///
+/// - `point`：查询点。
+/// - `circle`：目标圆。
 #[inline]
 pub fn distance_point_to_circle(point: Point, circle: Circle) -> f64 {
     let dist = point.distance_to(&circle.center);
     (dist - circle.radius).abs()
 }
 
+/// 返回点到圆弧的距离，非负。
+///
+/// - `point`：查询点，仅使用其 `x`/`y`。
+/// - `arc`：目标圆弧，其 `is_counter_clockwise` 决定角度区间落在哪一侧。
+///
+/// 若查询点相对圆心的角度落在弧的扫掠范围内，返回点到圆周的径向距离；否则返回径向距离与
+/// 两个端点到该点距离中的最小值，因此结果始终不超过到端点的距离。
 #[inline]
 pub fn distance_point_to_arc(point: Point, arc: Arc) -> f64 {
     let angle = arc.angle_from_center(&point);
@@ -66,11 +93,26 @@ pub fn distance_point_to_arc(point: Point, arc: Arc) -> f64 {
     }
 }
 
+/// 返回点到线段所在直线的垂足，结果被限制在线段范围内。
+///
+/// - `point`：查询点，仅使用其 `x`/`y`。
+/// - `line`：目标线段。
+///
+/// 与 [`distance_point_to_line`] 使用同一投影规则：垂足落在线段外时返回较近的端点，
+/// 返回点的 Z 坐标取自线段上的插值位置。
 #[inline]
 pub fn perpendicular_point_to_line(point: Point, line: Line) -> Point {
     line.closest_point(&point)
 }
 
+/// 返回两条线段上彼此最近的一对点，形式为 `(line1 上的点, line2 上的点)`。
+///
+/// - `line1`：第一条线段。
+/// - `line2`：第二条线段。
+///
+/// 为二维算法：只考虑 `x`/`y`，返回的两个点 Z 坐标均为 `0.0`。两个参数都被截断到
+/// `[0, 1]`，因此结果一定落在线段内；当两线段平行或某条线段退化（长度接近 0）时返回
+/// 一侧端点作为结果，不做特殊补偿。
 #[inline]
 pub fn closest_points_on_lines(line1: Line, line2: Line) -> (Point, Point) {
     let p1 = line1.start.to_vector2();
@@ -110,6 +152,13 @@ pub fn closest_points_on_lines(line1: Line, line2: Line) -> (Point, Point) {
     )
 }
 
+/// 返回点集的二维凸包顶点序列（逆时针，不含重复的起点）。
+///
+/// - `points`：输入点集，仅使用 `x`/`y`；点数为 0 时返回空 `Vec`，为 1 或 2 时原样返回。
+///
+/// 使用 Andrew 单调链算法，位于凸包边上的共线点会被舍弃，因此三角形成 3 个顶点、含一个
+/// 内部点的正方形得到 4 个顶点；返回顺序从最小 `x` 的点开始。若输入含 `NaN` 坐标，
+/// 排序比较会 panic。
 #[inline]
 pub fn convex_hull(points: &[Point]) -> Vec<Point> {
     if points.len() <= 2 {
@@ -152,6 +201,13 @@ pub fn convex_hull(points: &[Point]) -> Vec<Point> {
     lower
 }
 
+/// 返回两条直线的方向夹角，单位为弧度。
+///
+/// - `line1`：第一条线段，取其 `start` → `end` 方向。
+/// - `line2`：第二条线段，取其 `start` → `end` 方向。
+///
+/// 结果为有向夹角，落在 `(-π, π]`：交换两条线的顺序会得到相反的符号；零长度线段的方向为
+/// 零向量，结果不可靠。若只需要大小，请对返回值取绝对值。
 #[inline]
 pub fn angle_between_lines(line1: Line, line2: Line) -> f64 {
     let dir1 = line1.direction();
@@ -159,6 +215,13 @@ pub fn angle_between_lines(line1: Line, line2: Line) -> f64 {
     dir1.angle_to(&dir2)
 }
 
+/// 返回沿法线偏移后的新线段，原线段不变。
+///
+/// - `line`：源线段。
+/// - `distance`：偏移距离，取绝对值，负值与正值效果相同（方向由 `side` 决定）。
+/// - `side`：偏移方向，`1` 表示沿前进方向左侧的法线，`-1` 表示右侧，其他值按数值参与乘法。
+///
+/// 只使用 `x`/`y` 计算法线，两个端点的 Z 坐标原样保留。
 #[inline]
 pub fn offset_line(line: Line, distance: f64, side: i8) -> Line {
     let dir = line.direction();
@@ -173,6 +236,13 @@ pub fn offset_line(line: Line, distance: f64, side: i8) -> Line {
     )
 }
 
+/// 返回以指定点裁剪后的新线段，原线段不变。
+///
+/// - `line`：源线段。
+/// - `trim_point`：裁剪点，函数不检查它是否落在源线段上或其延长线上。
+/// - `keep_start`：`true` 保留 `start` 到 `trim_point` 的一段，`false` 保留 `trim_point` 到 `end` 的一段。
+///
+/// 结果始终是源线段两个端点与 `trim_point` 的组合，因此传入区间外的点会得到反向或被拉长的线段。
 #[inline]
 pub fn trim_line_at_point(line: Line, trim_point: Point, keep_start: bool) -> Line {
     if keep_start {
@@ -182,6 +252,14 @@ pub fn trim_line_at_point(line: Line, trim_point: Point, keep_start: bool) -> Li
     }
 }
 
+/// 返回沿自身方向延长或缩短后的新线段，原线段不变。
+///
+/// - `line`：源线段。
+/// - `extension`：延长量，单位与线段一致；取负值表示从该端向内缩短。
+/// - `extend_start`：是否调整起点（沿方向反向移动）。
+/// - `extend_end`：是否调整终点（沿方向正向移动）。
+///
+/// 两端可分别控制；两个标志都为 `false` 时返回与源线段等价的副本。
 #[inline]
 pub fn extend_line(line: Line, extension: f64, extend_start: bool, extend_end: bool) -> Line {
     let direction = line.direction();
@@ -201,6 +279,10 @@ pub fn extend_line(line: Line, extension: f64, extend_start: bool, extend_end: b
     Line::new(new_start, new_end)
 }
 
+/// 返回两点连线的中点，三个坐标分量分别取平均。
+///
+/// - `p1`：第一个点。
+/// - `p2`：第二个点。
 #[inline]
 pub fn midpoint(p1: Point, p2: Point) -> Point {
     Point::new(
@@ -210,6 +292,13 @@ pub fn midpoint(p1: Point, p2: Point) -> Point {
     )
 }
 
+/// 由三点构造中线线段，返回连接 `p1p2` 与 `p2p3` 两条边中点的线段。
+///
+/// - `p1`：第一条边的起点。
+/// - `p2`：两条边的公共顶点。
+/// - `p3`：第二条边的终点。
+///
+/// 结果不是角平分线，而是三角形中位线；三点共线时得到一条退化线段。
 #[inline]
 pub fn bisector(p1: Point, p2: Point, p3: Point) -> Line {
     let mid1 = midpoint(p1, p2);

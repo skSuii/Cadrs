@@ -1,41 +1,65 @@
+//! DWG（AutoCAD 原生二进制图纸）导入实现。
+//! 先用文件头魔数（AC1009…AC1032）判定版本，再按 R12、R13/R14、现代（R2000 及以后）三套段布局
+//! 依次读取表、块与实体段，最后组装成 `Document`：实体放入名为 "Model" 的块，图层取自 LAYER 表。
+//! 只读、不写回；识别不了的实体类型与 Hatch 会被静默跳过，不会因此中断整个文件的导入。
 use crate::data_structure::{Document, Block, Layer, Entity, ObjectId, EntityType, EntityGeometry, Visibility, Transform, HatchBoundary, BoundaryType, HatchEdge, EdgeType, DimensionType, TextStyle, TextAlignment};
 use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS};
 use std::io::{Read, Seek, SeekFrom};
 use thiserror::Error;
 use crate::io::Error as ImportError;
 
+/// DWG 导入过程中的错误，每个变体都带一段可读的说明文本。
 #[derive(Debug, Error)]
 pub enum DWGError {
+    /// 文件结构损坏，或读取越过了数据末尾（EOF）。
     #[error("Failed to parse DWG file: {0}")]
     ParseError(String),
     
+    /// 文件头魔数无法识别为任何已知的 DWG 版本。
     #[error("Invalid DWG version: {0}")]
     InvalidVersion(String),
     
+    /// 版本已识别，但当前实现尚未支持该版本的段布局。
     #[error("Unsupported DWG version: {0}")]
     UnsupportedVersion(String),
     
+    /// 段的 CRC16 校验值与文件内容不一致。
     #[error("CRC error: {0}")]
     CRCError(String),
     
+    /// 底层文件读写失败，由 `std::io::Error` 自动转换而来。
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
 }
 
+/// DWG 文件版本，取值与 AutoCAD 各发行版的保存格式一一对应。
+/// 解析器据此选择段布局：R12 走旧式实体段，R13/R14 增加表与块段，R2000 及以后走带节头的现代布局。
 #[derive(Debug, Clone, PartialEq)]
 pub enum DWGVersion {
+    /// AutoCAD R12，文件头魔数 `AC1009`。
     R12,
+    /// AutoCAD R13，文件头魔数 `AC1012`。
     R13,
+    /// AutoCAD R14，文件头魔数 `AC1014`。
     R14,
+    /// AutoCAD 2000，文件头魔数 `AC1015`。
     R2000,
+    /// AutoCAD 2004，文件头魔数 `AC1018`。
     R2004,
+    /// AutoCAD 2007，文件头魔数 `AC1021`。
     R2007,
+    /// AutoCAD 2010，文件头魔数 `AC1024`。
     R2010,
+    /// AutoCAD 2013，文件头魔数 `AC1027`。
     R2013,
+    /// AutoCAD 2018，文件头魔数 `AC1032`。
     R2018,
 }
 
 impl DWGVersion {
+    /// 由文件头魔数推断 DWG 版本。
+    /// - `magic`：文件开头的字节切片（通常取前 6 字节），按 UTF-8 宽松解码后匹配 `AC1009`…`AC1032`。
+    /// 返回 `None` 表示不属于任何已知版本；匹配区分大小写，切片更长也不影响结果。
     pub fn from_magic(magic: &[u8]) -> Option<Self> {
         let magic_str = String::from_utf8_lossy(magic);
         if magic_str.contains("AC1009") {
@@ -819,13 +843,24 @@ impl<'a> DWGParser<'a> {
     }
 }
 
+/// DWG 导入器：实现 `Importer`，把 DWG 文件的字节流解析为 `Document`。
+/// 解析不依赖磁盘，可从字节或文件两条入口调用；任一段解析失败即整份导入失败，不返回部分文档。
 pub struct DWGImporter;
 
 impl DWGImporter {
+    /// 创建导入器；不保存任何状态，全部解析都在每次导入时进行。
     pub fn new() -> Self {
         Self
     }
 
+    /// 从文件字节判断 DWG 版本，只看开头 6 字节。
+    /// - `data`：完整的文件字节；长度不足 6 字节时直接返回 `None`。
+    /// 返回 `None` 还表示开头的魔数不属于任何已知版本。
+    /// # 示例
+    /// ```
+    /// use cadrs::io::dwg::{DWGImporter, DWGVersion};
+    /// assert_eq!(DWGImporter::detect_version(b"AC1032"), Some(DWGVersion::R2018));
+    /// ```
     pub fn detect_version(data: &[u8]) -> Option<DWGVersion> {
         if data.len() < 6 {
             return None;

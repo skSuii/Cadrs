@@ -1,3 +1,8 @@
+//! 内置导出器实现与清单：DXF、SVG、JSON 三种格式的写出逻辑及统一分派。
+//! [`DXFExporter`] 直接拼接 ASCII DXF 文本（含 HEADER/TABLES/BLOCKS/ENTITIES 段）；
+//! [`SVGExporter`] 以固定画布尺寸输出矢量图元；[`JSONExporter`] 输出便于读取的实体摘要。
+//! [`ExporterRegistry`] 按扩展名选择实现，本模块错误同样以中文 `String` 返回给上层。
+
 use super::{Exporter, FormatInfo, Error};
 use super::io::SUPPORTED_FORMATS;
 use crate::data_structure::{Document, Entity, EntityType, EntityGeometry, ObjectId, Layer, Block};
@@ -8,19 +13,28 @@ use quick_xml::events::{Event, BytesText};
 use quick_xml::writer::Writer;
 use std::fs::File;
 
+/// ASCII DXF 导出器，按 [`DXFVersion`] 决定文件头中的 `$ACADVER` 版本号。
+/// 依次写出 HEADER/CLASSES/BLOCKS/ENTITIES/OBJECTS 段；当前仅实际输出直线、圆、圆弧与多段线，
+/// 其余实体类型会被跳过，块只写出块名占位而不含块内实体。
 #[derive(Debug)]
 pub struct DXFExporter {
     version: DXFVersion,
 }
 
+/// DXF 目标版本，对应文件头 `$ACADVER` 的取值。
 #[derive(Debug, Clone, PartialEq)]
 pub enum DXFVersion {
+    /// R12（`AC1009`），兼容性最好，但仅支持较老的实体类型。
     R12,
+    /// AutoCAD 2000（`AC1015`）。
     R2000,
+    /// AutoCAD 2018（`AC1032`），[`DXFExporter::new`] 的默认取值。
     R2018,
 }
 
 impl DXFExporter {
+    /// 创建 DXF 导出器，默认使用 [`DXFVersion::R2018`]。
+    /// 返回的实例可立即用于导出，版本无法在创建后修改。
     pub fn new() -> Self {
         Self {
             version: DXFVersion::R2018,
@@ -252,6 +266,8 @@ impl DXFExporter {
     }
 }
 
+/// SVG 导出器，输出像素尺寸画布，并用 `<g transform="scale(1,-1) ...">` 把图纸 Y 轴翻转为屏幕向下方向。
+/// 当前只输出直线、圆、圆弧与多段线，且描边颜色固定为 `#000000`。
 #[derive(Debug)]
 pub struct SVGExporter {
     width: f64,
@@ -260,6 +276,8 @@ pub struct SVGExporter {
 }
 
 impl SVGExporter {
+    /// 创建 SVG 导出器，默认画布 800×600 像素。
+    /// 返回的实例可立即导出；实体坐标按图纸原始数值写出，不做自动缩放。
     pub fn new() -> Self {
         Self {
             width: 800.0,
@@ -268,6 +286,9 @@ impl SVGExporter {
         }
     }
 
+    /// 设置输出画布尺寸，返回自身以便链式调用。
+    /// - `width`、`height`：画布宽高，单位为像素，同时写入根元素的 `width`/`height` 与 `viewBox`。
+    /// 消费并返回自身（builder 风格）；仅改变画布声明，图元坐标与 Y 轴翻转依据的是高度值。
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
         self.width = width;
         self.height = height;
@@ -432,10 +453,14 @@ impl SVGExporter {
     }
 }
 
+/// JSON 导出器，把文档名称、版本、单位与实体摘要序列化为文本 JSON。
+/// 实体只输出类型、图层与关键坐标：直线给起点/终点、圆给圆心/半径，其余几何一律落为 `"data": {}`；
+/// 文本内容不做转义处理，名称或图层名含引号时会破坏 JSON 结构。
 #[derive(Debug)]
 pub struct JSONExporter;
 
 impl JSONExporter {
+    /// 创建 JSON 导出器；结构体无状态，多次导出互不影响。
     pub fn new() -> Self {
         Self
     }
@@ -501,11 +526,21 @@ impl JSONExporter {
     }
 }
 
+/// 内置导出器清单，持有按注册顺序排列的导出器实例（DXF、SVG、JSON）。
+/// 查找按插入顺序进行，返回第一个声明支持该扩展名的实例。
 pub struct ExporterRegistry {
     exporters: Vec<Box<dyn Exporter>>,
 }
 
 impl ExporterRegistry {
+    /// 创建注册表并一次性登记全部内置导出器（DXF、SVG、JSON）。
+    /// 返回可直接使用的实例，无需再手工注册。
+    /// # 示例
+    /// ```
+    /// use cadrs::io::exporter_impl::ExporterRegistry;
+    /// let registry = ExporterRegistry::new();
+    /// assert!(registry.get_exporter("dxf").is_some());
+    /// ```
     pub fn new() -> Self {
         let mut registry = Self {
             exporters: Vec::new(),
@@ -520,6 +555,9 @@ impl ExporterRegistry {
         self.exporters.push(Box::new(JSONExporter::new()));
     }
 
+    /// 按扩展名查找第一个声明支持该扩展名的导出器。
+    /// - `extension`：扩展名，由各导出器的 `can_export` 自行做大小写不敏感判断。
+    /// 返回导出器的共享引用；内置清单中不存在的格式（如 `"dwg"`）返回 `None`。
     pub fn get_exporter(&self, extension: &str) -> Option<&dyn Exporter> {
         for exporter in &self.exporters {
             if exporter.can_export(extension) {
@@ -529,6 +567,10 @@ impl ExporterRegistry {
         None
     }
 
+    /// 按文件扩展名导出到磁盘，同名文件会被覆盖（有写盘副作用）。
+    /// - `doc`：源文档，仅读取，不会被修改。
+    /// - `filename`：目标路径，扩展名取最后一个点之后的部分并转为小写。
+    /// 成功返回 `()`；无扩展名或格式不被支持时返回中文错误描述，写盘失败则透传导出器的错误文本。
     pub fn export_to_file(&self, doc: &Document, filename: &str) -> Result<(), String> {
         let path = Path::new(filename);
         let extension = path.extension()
@@ -544,6 +586,10 @@ impl ExporterRegistry {
         }
     }
 
+    /// 把文档导出为内存字节，不产生磁盘副作用。
+    /// - `doc`：源文档，仅读取，不会被修改。
+    /// - `extension`：目标格式提示，会转为小写后用于选择导出器。
+    /// 返回完整的文件内容字节；格式不被支持时返回中文错误描述。
     pub fn export_to_bytes(&self, doc: &Document, extension: &str) -> Result<Vec<u8>, String> {
         let ext = extension.to_lowercase();
         if let Some(exporter) = self.get_exporter(&ext) {
@@ -554,6 +600,8 @@ impl ExporterRegistry {
         }
     }
 
+    /// 列出本注册表实际支持的导出扩展名。
+    /// 返回常量列表 `["dxf", "svg", "json"]`，与已登记的导出器集合一致。
     pub fn supported_formats(&self) -> Vec<&'static str> {
         vec!["dxf", "svg", "json"]
     }
@@ -565,6 +613,15 @@ impl Default for ExporterRegistry {
     }
 }
 
+/// 按扩展名直接新建一个导出器实例，无需先构造注册表。
+/// - `extension`：扩展名，大小写不敏感。
+/// 返回拥有所有权的导出器；`dxf`/`svg`/`json` 之外的扩展名返回 `None`。
+/// # 示例
+/// ```
+/// use cadrs::io::exporter_impl::get_exporter;
+/// assert!(get_exporter("dxf").is_some());
+/// assert!(get_exporter("dwg").is_none());
+/// ```
 pub fn get_exporter(extension: &str) -> Option<Box<dyn Exporter>> {
     match extension.to_lowercase().as_str() {
         "dxf" => Some(Box::new(DXFExporter::new())),

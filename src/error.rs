@@ -1,6 +1,16 @@
 //! # CAD SDK 错误处理模块
 //!
-//! 提供统一的错误类型和结果类型，用于整个CAD SDK的错误处理。
+//! 提供整个 SDK 统一的错误类型 [`CadError`] 与结果别名 [`CadResult`]，
+//! 以及参数校验（[`validation`]）与安全数值运算（[`numeric`]）辅助函数。
+//!
+//! - 各子模块用 `CadError` 的不同变体区分失败来源（几何、渲染、IO、解析、验证、
+//!   变换、索引、文档、图层、块、实体、捕捉、命令、格式、序列化），并可通过
+//!   `user_message()` 转成面向最终用户的中文提示。
+//! - 命令系统另用 `command::CommandResult` 表示执行结果；其失败分支通常记录由
+//!   `CadError::Command` 转写而来的信息。
+//! - 多个 `From` 实现（`std::io::Error`、`ParseFloatError`、`ParseIntError`、
+//!   `serde_json::Error`，启用 `io` 特性时还有 `quick_xml::Error`）使这些调用点
+//!   可直接使用 `?` 传播错误。
 
 use thiserror::Error;
 use std::num::ParseFloatError;

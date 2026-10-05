@@ -1,6 +1,11 @@
 //! 最小 DXF (ASCII R12) 导入/导出。
 //! 导出：LINE/CIRCLE/ARC/POLYLINE/POINT/ELLIPSE(分解)/SPLINE(分解)/SOLID(填充) + LAYER 表。
 //! 导入：LINE/CIRCLE/ARC/LWPOLYLINE/POLYLINE/POINT/ELLIPSE/SOLID + 图层（code 8）。
+//!
+//! 本模块直接读写 DXF 组码对（code/value），只覆盖 R12 的常用实体，不依赖外部 CAD 库。
+//! [`export`] 把 Document 渲染为整段文本，[`import`] 反过来解析为新的 Document；
+//! 实体所属图层通过组码 8 的名称映射到文档图层，名称缺失时归入默认图层 "0"，
+//! 角度在 DXF 中以度为单位、在 SDK 中以弧度为单位，转换在读写两侧分别完成。
 
 use std::collections::HashMap;
 
@@ -37,6 +42,8 @@ fn norm_deg(deg: f64) -> f64 {
 }
 
 /// DXF ACI 颜色 → RGB 近似
+/// - `aci`：AutoCAD 颜色索引；仅 1~6 有明确映射，其余取值（含 7 与越界值）一律返回白色。
+/// 返回 `(红, 绿, 蓝)`，各分量取值 0~255；用于导入 SOLID 填充色。
 pub fn aci_to_rgb(aci: i64) -> (u8, u8, u8) {
     match aci {
         1 => (255, 0, 0),
@@ -50,6 +57,8 @@ pub fn aci_to_rgb(aci: i64) -> (u8, u8, u8) {
 }
 
 /// DXF ACI 颜色索引近似映射
+/// - `color`：`(红, 绿, 蓝)` 分量，取值 0~255。
+/// 返回 1~7 的 ACI 索引，取曼哈顿距离最近的调色板项；明显偏白或远离调色板的颜色会落到 7（白）。
 pub fn rgb_to_aci(color: (u8, u8, u8)) -> i64 {
     let palette: [(i64, (u8, u8, u8)); 7] = [
         (1, (255, 0, 0)),
@@ -103,6 +112,25 @@ fn write_solid_fan(out: &mut String, layer: &str, pts: &[Point], color: (u8, u8,
 }
 
 /// 导出为 ASCII DXF (R12)
+/// 输出完整文本（HEADER/TABLES/ENTITIES 段 + EOF），图层表按文档图层写出颜色与可见性：
+/// 图层不可见时颜色组码取负值（DXF 约定）。
+/// - `doc`：源文档，仅读取，不会被修改。
+/// 返回可直接写盘的 DXF 文本；直线、圆、圆弧、多段线、点按原实体写出，
+/// 标注、文字、椭圆、样条与 NURBS 会被分解为折线笔画，实心填充 Hatch 与 Solid 则输出为 SOLID。
+/// # 示例
+/// ```
+/// use cadrs::data_structure::{make_circle, make_line, Document};
+/// use cadrs::geometry::Point;
+/// use cadrs::io::dxf::export;
+///
+/// let mut doc = Document::new("test".to_string());
+/// doc.add_entity(make_line(Point::new2d(0.0, 0.0), Point::new2d(10.0, 0.0)));
+/// doc.add_entity(make_circle(Point::new2d(5.0, 5.0), 2.0));
+///
+/// let text = export(&doc);
+/// assert!(text.contains("LINE"));
+/// assert!(text.contains("CIRCLE"));
+/// ```
 pub fn export(doc: &Document) -> String {
     let mut s = String::new();
     pair(&mut s, 0, "SECTION");
@@ -334,6 +362,19 @@ fn add_polyline(
 }
 
 /// 导入 ASCII DXF，返回新文档
+/// 只解析 ENTITIES 段内的 LINE/CIRCLE/ARC/LWPOLYLINE/POLYLINE/POINT/ELLIPSE/SOLID，
+/// 图层名（组码 8）不存在时复用已有图层或新建图层；DXF 默认图层 "0" 直接映射到 ModelSpace。
+/// - `src`：完整的 ASCII DXF 文本，非 UTF-8 内容请在调用前自行解码。
+/// 返回新建的 Document；文本为空、不是 ASCII DXF，或未识别出任何实体时返回错误描述。
+/// 被跳过的内容：DXF 圆弧总按逆时针解释，部分椭圆以 64 段折线近似，重复的 SOLID 尾点会被去除。
+/// # 示例
+/// ```
+/// use cadrs::io::dxf::import;
+///
+/// let text = "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n11\n1.0\n21\n1.0\n0\nENDSEC\n0\nEOF\n";
+/// let doc = import(text).unwrap();
+/// assert_eq!(doc.entity_count(), 1);
+/// ```
 pub fn import(src: &str) -> Result<Document, String> {
     let pairs = parse_pairs(src);
     if pairs.is_empty() {
@@ -509,10 +550,13 @@ pub fn import(src: &str) -> Result<Document, String> {
 }
 
 /// ASCII DXF (R12) 导入器
+/// 无状态的零尺寸类型，所有导入逻辑都在 [`import`] 中；文件读取与解码由 trait 方法完成。
 #[derive(Debug, Clone, Copy)]
 pub struct DXFImporter;
 
 impl DXFImporter {
+    /// 创建 DXF 导入器。
+    /// 无字段可初始化，返回的实例可跨线程共享并重复使用。
     pub fn new() -> Self {
         Self
     }

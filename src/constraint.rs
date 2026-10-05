@@ -1,21 +1,47 @@
+//! 几何约束求解：约束类型定义、约束记录与迭代式求解器。
+//!
+//! 核心概念：
+//! - `GeometricConstraint`：约束种类（重合、平行、垂直、相切、等长等），决定求解时采用的残差度量。
+//! - `ConstraintEntity`：一条约束记录，把约束种类绑定到一或两个实体 id 上，可附带参考点。
+//! - `GeometricSolver`：按容差迭代消除残差的求解器，维护实体状态（`EntityState`）与求解快照（`SolverState`）。
+//!
+//! 与其他模块的关系：只依赖 `geometry::Point` 表示世界坐标点（`Point` 为本文件的类型别名），
+//! 不直接操作 Document，实体 id 由调用方与文档中的 Entity 自行对应。坐标为世界坐标，长度为无单位数值，角度一律用弧度。
+
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::f64::consts::PI;
 
+/// 几何约束的种类。
+///
+/// 每个变体对应一种残差度量；求解时按种类选择评估与修正方式，
+/// 因而决定了约束需要几个实体（见 `GeometricSolver::validate_constraint`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GeometricConstraint {
+    /// 重合：两实体位置相同，残差为两点距离；也是 `Default` 的取值。
     Coincident,
+    /// 垂直：两实体方向成 90°，残差为夹角与 π/2 之差的绝对值。
     Perpendicular,
+    /// 平行：两实体方向相同或相反，残差为夹角相对 0 或 π 的最小偏差。
     Parallel,
+    /// 相切：两曲线相切，残差取最近点距离；缺少圆心信息时退化为夹角偏差的 100 倍惩罚。
     Tangent,
+    /// 水平：单实体方向沿 X 轴，残差为方向向量 y 分量的绝对值，修正时把角度置 0。
     Horizontal,
+    /// 竖直：单实体方向沿 Y 轴，残差为方向向量 x 分量的绝对值，修正时把角度置 π/2。
     Vertical,
+    /// 等长：两实体长度相等，残差为长度之差的绝对值。
     EqualLength,
+    /// 等半径：两实体半径相等，残差为半径之差的绝对值。
     EqualRadius,
+    /// 对称：两实体中点重合，残差为两中点距离（不建模真实对称轴）。
     Symmetric,
+    /// 中点：参考点落在线段中点，残差为中点到该点的距离，需要 `point_on_first` 或 `point_on_second`。
     Midpoint,
+    /// 中心：参考点落在实体中心，残差为中心到该点的距离；实体数量校验恒为通过。
     Center,
+    /// 固定：锁定实体，残差取该实体状态的 `drag_distance`，由调用方写入拖动偏移。
     Fix,
 }
 
@@ -26,6 +52,7 @@ impl Default for GeometricConstraint {
 }
 
 impl GeometricConstraint {
+    /// 返回约束的显示名（英文），供界面标签使用；等长、等半径名称中带空格。
     pub fn name(&self) -> &str {
         match self {
             GeometricConstraint::Coincident => "Coincident",
@@ -43,6 +70,7 @@ impl GeometricConstraint {
         }
     }
 
+    /// 返回约束的界面图标字符（Unicode 符号，非 ASCII），供工具栏按钮使用。
     pub fn icon(&self) -> &str {
         match self {
             GeometricConstraint::Coincident => "⭕",
@@ -61,16 +89,29 @@ impl GeometricConstraint {
     }
 }
 
+/// 一条具体的约束记录：把约束种类绑定到参与约束的实体 id 上。
+///
+/// 实体 id 需与 `GeometricSolver::entities` 中的键一致；是否需要 `second_entity`
+/// 由约束种类决定，可在加入求解器前用 `GeometricSolver::validate_constraint` 校验。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstraintEntity {
+    /// 约束的唯一标识，`new` 时由 UUID v4 生成，用于查找与删除。
     pub id: String,
+    /// 约束种类，决定求解时采用的残差度量；默认 `Coincident`。
     pub constraint_type: GeometricConstraint,
+    /// 参与约束的第一个实体 id。
     pub first_entity: String,
+    /// 参与约束的第二个实体 id；仅重合、平行、垂直、相切、等长、等半径、对称需要。
     pub second_entity: Option<String>,
+    /// 附加在第一个实体上的参考点（世界坐标），用于中点、中心等需要具体点的约束。
     pub point_on_first: Option<crate::geometry::Point>,
+    /// 附加在第二个实体上的参考点（世界坐标）；求值时优先于 `point_on_first`。
     pub point_on_second: Option<crate::geometry::Point>,
+    /// 该约束是否已生效，由调用方维护，求解器本身不修改。
     pub is_applied: bool,
+    /// 关联实体是否正在被拖动，由调用方维护，可用于临时放宽约束。
     pub is_dragging: bool,
+    /// 是否为参考（仅测量、不驱动几何）约束；为 true 时调用方可跳过几何修正。
     pub reference: bool,
 }
 
@@ -81,6 +122,7 @@ impl Default for ConstraintEntity {
 }
 
 impl ConstraintEntity {
+    /// 创建一条默认的重合约束，`id` 由 UUID 生成；两个实体 id 均为空，需要用 `with_*` 补齐。
     pub fn new() -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -95,26 +137,31 @@ impl ConstraintEntity {
         }
     }
 
+    /// 设置约束种类并返回自身，用于链式构建。
     pub fn with_type(mut self, constraint_type: GeometricConstraint) -> Self {
         self.constraint_type = constraint_type;
         self
     }
 
+    /// 设置第一个实体 id（须与求解器中的实体键一致）并返回自身。
     pub fn with_first_entity(mut self, entity: &str) -> Self {
         self.first_entity = entity.to_string();
         self
     }
 
+    /// 设置第二个实体 id 并返回自身；对单实体约束（水平/竖直/中点/固定）会使校验失败。
     pub fn with_second_entity(mut self, entity: &str) -> Self {
         self.second_entity = Some(entity.to_string());
         self
     }
 
+    /// 设置第一个实体上的参考点（世界坐标）并返回自身。
     pub fn with_first_point(mut self, point: crate::geometry::Point) -> Self {
         self.point_on_first = Some(point);
         self
     }
 
+    /// 设置第二个实体上的参考点（世界坐标）并返回自身。
     pub fn with_second_point(mut self, point: crate::geometry::Point) -> Self {
         self.point_on_second = Some(point);
         self
@@ -133,13 +180,20 @@ impl fmt::Display for ConstraintEntity {
     }
 }
 
+/// 一次求解的结果快照。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SolverState {
+    /// 求解是否收敛，即最后一次 `solve` 退出时最大残差已低于容差。
     pub solved: bool,
+    /// 实际迭代次数，`solve` 开始时清零。
     pub iterations: u32,
+    /// 退出时的最大残差，度量单位与实体坐标一致。
     pub error: f64,
+    /// 残差容忍上限，默认 1e-6；残差小于该值即认为收敛。
     pub max_error: f64,
+    /// 被约束的自由度总数，为各实体 `constrained_dof` 之和。
     pub constrained_dof: u32,
+    /// 剩余自由度数 = 实体数 × 3 − `constrained_dof`，为 0 表示完全约束。
     pub free_dof: u32,
 }
 
@@ -150,6 +204,7 @@ impl Default for SolverState {
 }
 
 impl SolverState {
+    /// 创建初始状态：`solved` 为 true、迭代次数 0、残差 0、容差 1e-6，自由度计数均为 0。
     pub fn new() -> Self {
         Self {
             solved: true,
@@ -162,14 +217,25 @@ impl SolverState {
     }
 }
 
+/// 基于迭代修正的几何约束求解器。
+///
+/// `solve` 反复评估所有约束的最大残差，未达 `tolerance` 时对重合/水平/竖直约束施加修正，
+/// 直到收敛或达到 `max_iterations`。增删约束、清空约束时若 `auto_solve` 为 true 会自动求解。
 #[derive(Debug, Clone)]
 pub struct GeometricSolver {
+    /// 已加入的约束列表，顺序即每轮修正的先后顺序。
     pub constraints: Vec<ConstraintEntity>,
+    /// 实体 id → 简化状态（位置/角度/长度/半径）的映射，由 `add_entity` 登记。
     pub entities: HashMap<String, EntityState>,
+    /// 残差收敛容差，默认 1e-6；越小迭代越久。
     pub tolerance: f64,
+    /// 单次求解的最大迭代次数，默认 1000，达到上限仍未收敛则 `SolverState::solved` 为 false。
     pub max_iterations: u32,
+    /// 最近一次求解的结果快照。
     pub state: SolverState,
+    /// 为 true（默认）时 `add_constraint`/`remove_constraint`/`clear_constraints` 会立即触发 `solve`。
     pub auto_solve: bool,
+    /// 是否启用约束推断；仅供调用方参考，求解器本身不读取该标志。
     pub inference_constraints: bool,
 }
 
@@ -180,6 +246,7 @@ impl Default for GeometricSolver {
 }
 
 impl GeometricSolver {
+    /// 创建空求解器：无约束、无实体；容差 1e-6、最多 1000 次迭代，`auto_solve` 与约束推断默认开启。
     pub fn new() -> Self {
         Self {
             constraints: Vec::new(),
@@ -192,6 +259,9 @@ impl GeometricSolver {
         }
     }
 
+    /// 加入一条约束，成功时将其复制进 `constraints`（不消耗传入值）。
+    /// - `constraint`：待加入的约束；需通过 `validate_constraint` 的实体数量校验。
+    /// 返回：加入成功返回 true；校验失败返回 false 且不修改求解器。`auto_solve` 为 true 时随后求解。
     pub fn add_constraint(&mut self, constraint: ConstraintEntity) -> bool {
         if self.validate_constraint(&constraint) {
             self.constraints.push(constraint.clone());
@@ -204,6 +274,8 @@ impl GeometricSolver {
         }
     }
 
+    /// 按 id 删除约束（会删除所有同 id 项）；`auto_solve` 为 true 时随后求解。
+    /// 返回：删除了至少一条返回 true，未找到任何匹配返回 false。
     pub fn remove_constraint(&mut self, constraint_id: &str) -> bool {
         let original_len = self.constraints.len();
         self.constraints.retain(|c| c.id != constraint_id);
@@ -213,10 +285,15 @@ impl GeometricSolver {
         self.constraints.len() != original_len
     }
 
+    /// 按 id 查找约束。
+    /// 返回：命中返回约束引用；无匹配返回 `None`。
     pub fn get_constraint(&self, constraint_id: &str) -> Option<&ConstraintEntity> {
         self.constraints.iter().find(|c| c.id == constraint_id)
     }
 
+    /// 列出引用指定实体的全部约束（`first_entity` 或 `second_entity` 与之字符串相等）。
+    /// - `entity_id`：实体 id，精确匹配，不做归一化。
+    /// 返回：匹配约束的引用列表；无匹配时为空向量。
     pub fn constraints_for_entity(&self, entity_id: &str) -> Vec<&ConstraintEntity> {
         self.constraints
             .iter()
@@ -224,6 +301,9 @@ impl GeometricSolver {
             .collect()
     }
 
+    /// 校验约束给出的实体数量是否与其种类匹配。
+    /// 重合/垂直/平行/相切/等长/等半径/对称必须给出 `second_entity`；水平/竖直/中点/固定必须不给出；中心恒为合法。
+    /// 返回：结构合法返回 true。只检查字段组合，不检查实体是否真的存在于 `entities` 中。
     pub fn validate_constraint(&self, constraint: &ConstraintEntity) -> bool {
         match constraint.constraint_type {
             GeometricConstraint::Coincident
@@ -241,6 +321,10 @@ impl GeometricSolver {
         }
     }
 
+    /// 迭代求解：每轮取所有约束残差的最大值，小于 `tolerance` 即收敛，否则施加修正，最多 `max_iterations` 轮。
+    /// 返回：本次求解后的 `SolverState` 引用，含迭代次数、最大残差、是否收敛与自由度统计。
+    /// 副作用：就地修改 `entities`——重合约束让两实体各移动一半距离，水平/竖直约束直接改写实体角度；
+    /// 达到迭代上限仍未收敛时 `solved` 为 false，实体停留在最后一次修正的结果上。
     pub fn solve(&mut self) -> &SolverState {
         self.state.iterations = 0;
         self.state.error = 0.0;
@@ -552,6 +636,12 @@ impl GeometricSolver {
         self.state.free_dof = total_dof - constrained_dof;
     }
 
+    /// 登记一个受约束实体，已存在同 id 时直接覆盖其状态。
+    /// - `entity_id`：实体标识，必须与约束里使用的 id 一致。
+    /// - `position`：实体位置（世界坐标），同时作为初始中心。
+    /// - `angle`：方位角，弧度。
+    /// - `length`：长度，用于等长约束与端点推算。
+    /// 新状态的半径与已约束自由度均置 0，拖动偏移置 0。
     pub fn add_entity(&mut self, entity_id: &str, position: Point, angle: f64, length: f64) {
         self.entities.insert(
             entity_id.to_string(),
@@ -567,6 +657,9 @@ impl GeometricSolver {
         );
     }
 
+    /// 把实体位置设为给定点，并按新旧位置之差同步平移中心。
+    /// - `position`：新的世界坐标位置。
+    /// 实体不存在时不做任何修改；角度、长度与半径保持不变。
     pub fn set_entity_position(&mut self, entity_id: &str, position: Point) {
         if let Some(state) = self.entities.get_mut(entity_id) {
             let dx = position.x - state.position.x;
@@ -577,6 +670,7 @@ impl GeometricSolver {
         }
     }
 
+    /// 清空全部约束，并把各实体的 `constrained_dof` 归零（保留实体本身）；`auto_solve` 为 true 时随后求解。
     pub fn clear_constraints(&mut self) {
         self.constraints.clear();
         for state in self.entities.values_mut() {
@@ -587,27 +681,43 @@ impl GeometricSolver {
         }
     }
 
+    /// 返回当前约束条数（含尚未生效的约束）。
     pub fn constraint_count(&self) -> usize {
         self.constraints.len()
     }
 
+    /// 草图是否已完全约束。
+    ///
+    /// 仅当至少存在一个受约束实体、且剩余自由度 `free_dof` 为 0 时返回 `true`。
+    /// 空求解器（尚未加入任何实体）不算「完全约束」，避免刚创建就被判定为已约束。
+    /// 是否已完全约束：最近一次求解后 `state.free_dof == 0`。
+    /// 结论依赖 `state`，约束变更后未重新求解时可能过时。
     pub fn is_fully_constrained(&self) -> bool {
-        self.state.free_dof == 0
+        !self.entities.is_empty() && self.state.free_dof == 0
     }
 
+    /// 是否过约束：被约束自由度总数超过 实体数 × 3，视为存在冗余或冲突约束。
     pub fn is_over_constrained(&self) -> bool {
         (self.state.constrained_dof as usize) > self.entities.len() * 3
     }
 }
 
+/// 求解器内部维护的实体简化状态，每个实体按 3 个自由度计入统计。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityState {
+    /// 实体参考位置，世界坐标。
     pub position: Point,
+    /// 实体中心，随 `move_entity` 与 `set_entity_position` 和位置同步平移。
     pub center: Point,
+    /// 方位角，弧度；水平修正置 0，竖直修正置 π/2。
     pub angle: f64,
+    /// 长度，用于等长约束与端点推算。
     pub length: f64,
+    /// 半径，`add_entity` 时固定为 0，由等半径等约束使用。
     pub radius: f64,
+    /// 该实体已被约束的自由度计数，用于统计 `SolverState::free_dof`。
     pub constrained_dof: u32,
+    /// 最近一次拖动偏移，`Fix` 约束以其为残差，由调用方写入。
     pub drag_distance: f64,
 }
 
@@ -618,6 +728,7 @@ impl Default for EntityState {
 }
 
 impl EntityState {
+    /// 创建全零状态：位置与中心均在原点，角度、长度、半径与拖动距离均为 0。
     pub fn new() -> Self {
         Self {
             position: Point::origin(),
@@ -631,6 +742,7 @@ impl EntityState {
     }
 }
 
+/// 本模块使用的点类型别名，直接复用 `geometry::Point`，表示世界坐标点。
 pub type Point = crate::geometry::Point;
 
 #[cfg(test)]

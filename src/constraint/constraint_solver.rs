@@ -1,77 +1,140 @@
+//! 约束求解（实体下标索引 + 数值迭代版）：约束表达式、约束系统与法方程迭代求解器。
+//!
+//! 核心概念：
+//! - 约束表达式：`PointConstraint` / `LineConstraint` / `CircleConstraint` / `ArcConstraint` / `CurveConstraint`
+//!   用实体下标（`ConstraintSystem::entities` 的位置）或显式参数引用几何；`GeometricConstraint`
+//!   与 `DimensionalConstraint` 再把这些引用组合成几何约束与尺寸约束。
+//! - `ConstraintSystem`：持有实体、约束与求解设置，`solve` 在内部迭代消除残差。
+//! - `ConstraintBuilder`：以静态方法把常用约束直接写入系统，省去手工包装枚举。
+//!
+//! 与其他模块的关系：本文件与 `constraint` 模块顶层的字符串 id 版 `GeometricSolver` 是两套互不共享状态的实现；
+//! 坐标为世界坐标，角度一律用弧度，实体参数按类型排列（点 2 个、线 4 个、圆 3 个、弧 5 个）。
+
 use super::geometry::{Point, Line, Circle, Arc};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// 几何约束：以残差形式表达的实体间几何关系，残差为 0 表示约束被满足。
+///
+/// 每个变体当前实现一种残差度量；`Angle` 的目标角与所有角度量均为弧度。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GeometricConstraint {
+    /// 重合：残差为两点的欧氏距离。
     Coincident(PointConstraint, PointConstraint),
+    /// 水平：两点 y 坐标相同，残差为 y 之差（有符号）。
     Horizontal(PointConstraint, PointConstraint),
+    /// 竖直：两点 x 坐标相同，残差为 x 之差（有符号）。
     Vertical(PointConstraint, PointConstraint),
+    /// 平行：残差为两方向向量的叉积（越接近共线越接近 0）。
     Parallel(LineConstraint, LineConstraint),
+    /// 垂直：残差为两方向向量的点积（越接近正交越接近 0）。
     Perpendicular(LineConstraint, LineConstraint),
+    /// 相切：线与圆取「圆心到直线距离 − 半径」，圆与圆取「圆心距 − 半径和」；弧参与时残差按 0 处理。
     Tangent(CurveConstraint, CurveConstraint),
+    /// 同心：残差为两圆心距离。
     Concentric(CircleConstraint, CircleConstraint),
+    /// 等长：残差为两线长度之差。
     EqualLength(LineConstraint, LineConstraint),
+    /// 等半径：残差为两圆半径之差。
     EqualRadius(CircleConstraint, CircleConstraint),
+    /// 中点：点位于线段中点，残差为该点到中点（两端点坐标平均）的距离。
     Midpoint(PointConstraint, LineConstraint),
+    /// 点在线上：残差为点到直线的垂距，直线按无限长处理。
     PointOnLine(PointConstraint, LineConstraint),
+    /// 点在圆上：残差为「点到圆心距离 − 半径」。
     PointOnCircle(PointConstraint, CircleConstraint),
+    /// 点在弧上：点角落在弧的起止角区间内时取径向偏差，区间外取到两端点距离的较小值。
     PointOnArc(PointConstraint, ArcConstraint),
+    /// 对称：两点关于直线对称，残差为两点中点到直线的垂距。
     Symmetry(PointConstraint, PointConstraint, LineConstraint),
+    /// 夹角：第三个字段为目标角（弧度），残差为实际有符号夹角减去目标角，夹角取值域为 (−π, π]。
     Angle(LineConstraint, LineConstraint, f64),
+    /// 共线：与平行同形，残差为方向向量叉积，不校验两线是否分离。
     Collinear(LineConstraint, LineConstraint),
+    /// 线方向沿 X 轴：残差为方向向量的 y 分量（应为 0）。
     ParallelX(LineConstraint),
+    /// 线方向沿 Y 轴：残差为方向向量的 x 分量（应为 0）。
     ParallelY(LineConstraint),
 }
 
+/// 点的引用方式：指向某实体上的点，或一个尚未绑定的自由参数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PointConstraint {
+    /// 实体上的点：`(实体下标, 点序号)`；线实体取 0 为起点、1 为终点，点实体忽略序号。
     EntityPoint(usize, usize),
+    /// 自由点占位：当前实现一律按原点 (0, 0) 参与计算，尚未接入外部参数。
     FreePoint(usize),
 }
 
+/// 直线的引用方式。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LineConstraint {
+    /// 引用实体线段，取该实体的 4 个参数（起点 x、y，终点 x、y）。
     EntityLine(usize),
+    /// 由两个点约束确定的直线。
     ThroughPoints(PointConstraint, PointConstraint),
 }
 
+/// 圆的引用方式。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CircleConstraint {
+    /// 引用实体圆，取该实体的 3 个参数（圆心 x、y，半径）。
     EntityCircle(usize),
+    /// 由圆心点约束与显式半径定义。
     CenterRadius(PointConstraint, f64),
 }
 
+/// 圆弧的引用方式。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ArcConstraint {
+    /// 引用实体弧，取该实体的 5 个参数（圆心 x、y，半径，起始角，终止角），角度为弧度。
     EntityArc(usize),
+    /// 由圆心点约束、半径与起止角定义，角度为弧度。
     CenterRadiusAngles(PointConstraint, f64, f64, f64),
 }
 
+/// 曲线的统一引用，供相切等跨类型约束使用。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CurveConstraint {
+    /// 直线或线段。
     Line(LineConstraint),
+    /// 圆。
     Circle(CircleConstraint),
+    /// 圆弧。
     Arc(ArcConstraint),
 }
 
+/// 尺寸约束：带目标数值的约束，和几何约束一样占用自由度并计入雅可比矩阵。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DimensionalConstraint {
+    /// 两点距离等于目标值；目标值应为有限非负数，否则 `is_valid` 判定为非法。
     Distance(PointConstraint, PointConstraint, f64),
+    /// 两线夹角等于目标值，单位为弧度。
     Angle(LineConstraint, LineConstraint, f64),
+    /// 圆半径等于目标值。
     Radius(CircleConstraint, f64),
+    /// 圆直径等于目标值，求解时残差按 2 × 半径 − 目标直径 计算。
     Diameter(CircleConstraint, f64),
+    /// 线长等于目标值。
     Length(LineConstraint, f64),
 }
 
+/// 约束系统：以实体下标为索引，集中保存实体、约束与求解设置。
+///
+/// 实体的 id 就是它在 `entities` 中的下标，因此实体只增不删，约束里保存的下标始终有效。
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem {
+    /// 几何约束列表，顺序决定雅可比矩阵的行顺序。
     pub geometric_constraints: Vec<GeometricConstraint>,
+    /// 尺寸约束列表，其行排在几何约束之后。
     pub dimensional_constraints: Vec<DimensionalConstraint>,
+    /// 被约束的实体，下标即约束中引用的实体 id。
     pub entities: Vec<ConstrainedEntity>,
+    /// 迭代求解设置（迭代上限、容差、阻尼等）。
     pub solver_settings: SolverSettings,
 }
 
 impl ConstraintSystem {
+    /// 创建空系统：无实体、无约束，求解设置取 `SolverSettings::default()`。
     pub fn new() -> Self {
         Self {
             geometric_constraints: Vec::new(),
@@ -81,48 +144,65 @@ impl ConstraintSystem {
         }
     }
 
+    /// 追加一个实体并返回其下标，该下标即后续约束中使用的实体 id。
+    /// - `entity`：实体及其初始参数，按值移入系统。
+    /// 返回：新实体的下标，等于加入前的实体数量；实体不会被删除，下标因此保持稳定。
     pub fn add_entity(&mut self, entity: ConstrainedEntity) -> usize {
         let id = self.entities.len();
         self.entities.push(entity);
         id
     }
 
+    /// 追加一条几何约束；不做有效性校验，可用 `validate_constraints` 事后检查。
     pub fn add_geometric_constraint(&mut self, constraint: GeometricConstraint) {
         self.geometric_constraints.push(constraint);
     }
 
+    /// 追加一条尺寸约束；不做有效性校验，目标值非法时会在 `solve` 中产生残差。
     pub fn add_dimensional_constraint(&mut self, constraint: DimensionalConstraint) {
         self.dimensional_constraints.push(constraint);
     }
 
+    /// 以当前参数为初值迭代求解，直到最大残差小于容差或达到迭代上限。
+    /// 返回：`SolverResult`；失败时 `success` 为 false，`message` 给出迭代次数与残余残差。
+    /// 副作用：求解得到的参数增量会累加到 `entities` 上，固定实体（`is_fixed`）不受影响。
     pub fn solve(&mut self) -> SolverResult {
         let mut solver = ConstraintSolver::new(self);
         solver.solve()
     }
 
+    /// 按下标获取实体。
+    /// 返回：下标有效时返回实体引用，越界返回 `None`。
     pub fn get_entity(&self, id: usize) -> Option<&ConstrainedEntity> {
         self.entities.get(id)
     }
 
+    /// 按下标获取实体可变引用，用于直接改写几何参数。
+    /// 返回：越界返回 `None`。
     pub fn get_entity_mut(&mut self, id: usize) -> Option<&mut ConstrainedEntity> {
         self.entities.get_mut(id)
     }
 
+    /// 自由度是否为 0：约束条数与实体自由度恰好抵消，几何被完全确定。
     pub fn is_fully_constrained(&self) -> bool {
         let degrees_of_freedom = self.calculate_degrees_of_freedom();
         degrees_of_freedom == 0
     }
 
+    /// 自由度是否大于 0：约束不足，几何仍可变动。
     pub fn is_under_constrained(&self) -> bool {
         let degrees_of_freedom = self.calculate_degrees_of_freedom();
         degrees_of_freedom > 0
     }
 
+    /// 自由度是否小于 0：约束冗余或互相冲突。
     pub fn is_over_constrained(&self) -> bool {
         let degrees_of_freedom = self.calculate_degrees_of_freedom();
         degrees_of_freedom < 0
     }
 
+    /// 按「实体自由度之和 − 约束条数」估算系统自由度。
+    /// 返回：正数表示欠约束、0 表示完全约束、负数表示过约束；固定实体贡献 0 个自由度，参考约束照常计数。
     pub fn calculate_degrees_of_freedom(&self) -> i32 {
         let mut dof = 0;
 
@@ -136,6 +216,8 @@ impl ConstraintSystem {
         dof
     }
 
+    /// 构造约束图：每个实体是一个节点，同一约束涉及的实体两两连无向边。
+    /// 返回：可用于分析连通分量与冗余的 `ConstraintGraph`；`FreePoint` 等不含实体引用的约束不产生边。
     pub fn get_constraint_graph(&self) -> ConstraintGraph {
         let mut graph = ConstraintGraph::new();
 
@@ -168,6 +250,9 @@ impl ConstraintSystem {
         graph
     }
 
+    /// 逐条检查几何约束与尺寸约束的形式合法性，并检查整体自由度是否超限。
+    /// 返回：错误列表，按几何约束、尺寸约束、自由度的顺序排列；空列表表示全部通过。
+    /// 自由度小于 0 时追加一条 `ValidationError::OverConstrained`，其 `excess_constraints` 为超出的条数。
     pub fn validate_constraints(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
 
@@ -200,16 +285,25 @@ impl Default for ConstraintSystem {
     }
 }
 
+/// 参与约束求解的实体：类型决定参数布局与自由度数。
 #[derive(Debug, Clone)]
 pub struct ConstrainedEntity {
+    /// 实体下标，须与它在 `ConstraintSystem::entities` 中的位置一致。
     pub id: usize,
+    /// 实体类型，决定 `parameters` 的含义与自由度数量。
     pub entity_type: EntityType,
+    /// 几何参数向量，按类型排列：点 [x, y]、线 [x1, y1, x2, y2]、圆 [cx, cy, r]、弧 [cx, cy, r, start, end]。
     pub parameters: Vec<f64>,
+    /// 是否固定：为 true 时自由度为 0，求解不会修改其参数。
     pub is_fixed: bool,
+    /// 是否为参考实体（仅用于测量）；求解器不做特殊处理，语义由调用方决定。
     pub is_reference: bool,
 }
 
 impl ConstrainedEntity {
+    /// 按类型创建实体，参数取该类型的默认初值（位于原点，长度/半径初始为 1）。
+    /// - `id`：实体下标，需由调用方保证与它在系统中的位置一致。
+    /// 返回的实体未固定、非参考，可再用 `as_fixed`/`as_reference` 调整。
     pub fn new(id: usize, entity_type: EntityType) -> Self {
         let parameters = entity_type.get_parameters();
         Self {
@@ -221,16 +315,19 @@ impl ConstrainedEntity {
         }
     }
 
+    /// 标记为固定并返回自身（链式构建）；固定实体自由度为 0，求解时参数保持不变。
     pub fn as_fixed(mut self) -> Self {
         self.is_fixed = true;
         self
     }
 
+    /// 标记为参考实体并返回自身（链式构建）；当前求解流程不区分参考与非参考。
     pub fn as_reference(mut self) -> Self {
         self.is_reference = true;
         self
     }
 
+    /// 该实体贡献的自由度数：固定实体恒为 0，否则点 2、线 4、圆 3、弧 5。
     pub fn degrees_of_freedom(&self) -> i32 {
         if self.is_fixed {
             return 0;
@@ -238,28 +335,41 @@ impl ConstrainedEntity {
         self.entity_type.degrees_of_freedom()
     }
 
+    /// 按当前参数取点坐标。
+    /// 返回：实体为点时返回该点；其它类型返回 `None`。
     pub fn get_point(&self) -> Option<Point> {
         self.entity_type.get_point(&self.parameters)
     }
 
+    /// 按当前参数取线段两端点。
+    /// 返回：实体为线时返回 `(起点, 终点)`，其它类型返回 `None`。
     pub fn get_line(&self) -> Option<(Point, Point)> {
         self.entity_type.get_line(&self.parameters)
     }
 
+    /// 按当前参数取圆心与半径。
+    /// 返回：实体为圆时返回 `(圆心, 半径)`，其它类型返回 `None`。
     pub fn get_circle(&self) -> Option<(Point, f64)> {
         self.entity_type.get_circle(&self.parameters)
     }
 
+    /// 按当前参数取弧的圆心、半径与起止角（角度为弧度）。
+    /// 返回：实体为弧时返回 `(圆心, 半径, 起始角, 终止角)`，其它类型返回 `None`。
     pub fn get_arc(&self) -> Option<(Point, f64, f64, f64)> {
         self.entity_type.get_arc(&self.parameters)
     }
 }
 
+/// 受约束实体的几何类型，决定参数布局与自由度数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EntityType {
+    /// 点：参数 [x, y]，2 个自由度。
     Point,
+    /// 线段：参数 [x1, y1, x2, y2]，4 个自由度。
     Line,
+    /// 圆：参数 [cx, cy, r]，3 个自由度。
     Circle,
+    /// 圆弧：参数 [cx, cy, r, start, end]，5 个自由度，起止角为弧度。
     Arc,
 }
 
@@ -322,18 +432,27 @@ impl EntityType {
     }
 }
 
+/// 迭代求解器的设置。
 #[derive(Debug, Clone)]
 pub struct SolverSettings {
+    /// 最大迭代次数，默认 100；达到上限仍未收敛即返回失败。
     pub max_iterations: usize,
+    /// 收敛容差，默认 1e-6；最大残差绝对值小于该值即判定收敛。
     pub tolerance: f64,
+    /// 阻尼系数，默认 0.5；仅在 `use_damping` 为 true 时有意义。
     pub damping_factor: f64,
+    /// 是否启用阻尼，默认 true；当前求解流程未读取该标志，保留给调用方与后续实现。
     pub use_damping: bool,
+    /// 约束权重，默认 1.0；当前求解流程未使用。
     pub constraint_weight: f64,
+    /// 是否使用高斯-牛顿式法方程求解，默认 true；当前实现固定走该方法。
     pub use_gauss_newton: bool,
+    /// 是否输出调试信息，默认 false；当前实现尚未打印任何内容。
     pub debug_output: bool,
 }
 
 impl SolverSettings {
+    /// 返回默认设置：最多 100 次迭代、容差 1e-6、阻尼 0.5、启用阻尼与高斯-牛顿，权重 1.0，关闭调试输出。
     pub fn new() -> Self {
         Self {
             max_iterations: 100,
@@ -346,21 +465,25 @@ impl SolverSettings {
         }
     }
 
+    /// 设置最大迭代次数并返回自身（链式构建）。
     pub fn with_max_iterations(mut self, iterations: usize) -> Self {
         self.max_iterations = iterations;
         self
     }
 
+    /// 设置收敛容差并返回自身（链式构建）；容差越小迭代次数越多。
     pub fn with_tolerance(mut self, tolerance: f64) -> Self {
         self.tolerance = tolerance;
         self
     }
 
+    /// 设置阻尼系数并返回自身（链式构建）。
     pub fn with_damping(mut self, damping: f64) -> Self {
         self.damping_factor = damping;
         self
     }
 
+    /// 打开调试输出并返回自身（链式构建）。
     pub fn with_debug(mut self) -> Self {
         self.debug_output = true;
         self
@@ -373,16 +496,25 @@ impl Default for SolverSettings {
     }
 }
 
+/// 一次求解的结果。
 #[derive(Debug, Clone)]
 pub struct SolverResult {
+    /// 是否求解成功（已收敛）。
     pub success: bool,
+    /// 实际迭代次数；由 `failure` 构造时固定为 0。
     pub iterations: usize,
+    /// 退出时的最大残差绝对值，越小越接近满足全部约束。
     pub residual_error: f64,
+    /// 是否收敛；与 `success` 含义一致，失败结果为 false。
     pub converged: bool,
+    /// 结果说明文字：成功为「求解成功」，失败为未收敛的迭代次数与残差。
     pub message: String,
 }
 
 impl SolverResult {
+    /// 构造成功结果，`message` 固定为「求解成功」。
+    /// - `iterations`：实际迭代次数。
+    /// - `residual`：退出时的最大残差。
     pub fn success(iterations: usize, residual: f64) -> Self {
         Self {
             success: true,
@@ -393,6 +525,8 @@ impl SolverResult {
         }
     }
 
+    /// 构造失败结果：`success` 与 `converged` 均为 false，迭代次数与残差置 0。
+    /// - `message`：失败原因，通常是「在 N 次迭代后未收敛，残差：R」。
     pub fn failure(message: String) -> Self {
         Self {
             success: false,
@@ -1041,21 +1175,29 @@ impl ConstraintSolver<'_> {
     }
 }
 
+/// 轻量二维向量，供约束残差评估与雅可比计算内部使用（世界坐标，无单位）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vector2D {
+    /// X 分量。
     pub x: f64,
+    /// Y 分量。
     pub y: f64,
 }
 
 impl Vector2D {
+    /// 按分量构造向量。
+    /// - `x`：X 分量。
+    /// - `y`：Y 分量。
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
+    /// 返回向量模长（欧氏长度），零向量返回 0。
     pub fn norm(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
 
+    /// 返回单位向量；模长小于 1e-12 时返回 (1, 0)，以免产生 NaN。
     pub fn normalized(&self) -> Self {
         let norm = self.norm();
         if norm < 1e-12 {
@@ -1068,14 +1210,17 @@ impl Vector2D {
         }
     }
 
+    /// 返回与另一向量的点积：同向为正、垂直为 0，用于垂直约束的残差。
     pub fn dot(&self, other: Vector2D) -> f64 {
         self.x * other.x + self.y * other.y
     }
 
+    /// 返回二维叉积的 z 分量（`x·other.y − y·other.x`）：共线时为 0，用于平行与共线约束的残差。
     pub fn cross(&self, other: Vector2D) -> f64 {
         self.x * other.y - self.y * other.x
     }
 
+    /// 返回从 self 转到 other 的有符号夹角，取 `atan2(叉积, 点积)`，范围为 (−π, π]，单位弧度。
     pub fn angle_between(&self, other: Vector2D) -> f64 {
         let dot = self.dot(other);
         let det = self.cross(other);
@@ -1141,12 +1286,14 @@ impl std::ops::Div<f64> for Vector2D {
     }
 }
 
+/// 约束图：实体为节点、同一约束涉及的实体两两连边，用于分析约束的连通性与冗余（本模块内部使用）。
 struct ConstraintGraph {
     nodes: HashSet<usize>,
     edges: HashSet<(usize, usize)>,
 }
 
 impl ConstraintGraph {
+    /// 创建空图：无节点、无边。
     pub fn new() -> Self {
         Self {
             nodes: HashSet::new(),
@@ -1154,16 +1301,19 @@ impl ConstraintGraph {
         }
     }
 
+    /// 加入一个实体节点；重复加入同一节点无副作用。
     pub fn add_node(&mut self, node: usize) {
         self.nodes.insert(node);
     }
 
+    /// 在两个节点之间加一条无向边：自环（`node1 == node2`）被忽略，边按 (较小, 较大) 归一化后去重存储。
     pub fn add_edge(&mut self, node1: usize, node2: usize) {
         if node1 != node2 {
             self.edges.insert((node1.min(node2), node1.max(node2)));
         }
     }
 
+    /// 返回全部连通分量，每个分量是节点下标列表（遍历起点取自哈希集合，顺序不保证稳定）。
     pub fn get_connected_components(&self) -> Vec<Vec<usize>> {
         let mut visited = HashSet::new();
         let mut components = Vec::new();
@@ -1213,6 +1363,9 @@ impl ConstraintGraph {
         neighbors
     }
 
+    /// 是否存在环（有环通常意味着约束冗余）。
+    /// 注意当前实现把无向边按「小下标 → 大下标」建成有向图再做拓扑排序，该有向图必然无环，
+    /// 因此实际上总是返回 false，仅作为待完善的占位判断。
     pub fn has_cycles(&self) -> bool {
         let components = self.get_connected_components();
 
@@ -1265,16 +1418,25 @@ impl ConstraintGraph {
     }
 }
 
+/// 约束校验错误，由 `ConstraintSystem::validate_constraints` 产生。
 #[derive(Debug, Clone)]
 pub enum ValidationError {
+    /// 第 n 条几何约束无效（引用形式非法）。
     InvalidGeometricConstraint(usize),
+    /// 第 n 条尺寸约束无效（引用形式非法或目标值非有限）。
     InvalidDimensionalConstraint(usize),
+    /// 过约束：`excess_constraints` 为超出实体自由度的约束条数。
     OverConstrained { excess_constraints: usize },
+    /// 欠约束：`missing_constraints` 为仍缺少的约束条数；当前校验流程不会产生。
     UnderConstrained { missing_constraints: usize },
+    /// 约束互相冲突：`constraints` 为相关约束的下标；当前校验流程不会产生。
     ConflictingConstraints { constraints: Vec<usize> },
 }
 
 impl GeometricConstraint {
+    /// 返回该约束直接引用的实体下标，重复引用只保留一次。
+    /// 返回：目前仅重合、水平、竖直、平行、垂直、相切、同心返回实体；等长、等半径、中点、点在线上、
+    /// 点在圆/弧上、对称、角度、共线、平行 X/Y 等变体尚未实现，一律返回空向量。
     pub fn get_constrained_entities(&self) -> Vec<usize> {
         match self {
             GeometricConstraint::Coincident(p1, p2) => {
@@ -1397,6 +1559,9 @@ impl GeometricConstraint {
         }
     }
 
+    /// 检查约束的引用形式是否合法：各端必须是实体引用（`EntityPoint`/`EntityLine`/`EntityCircle`/`EntityArc`），
+    /// `Angle` 还要求目标角为有限值；`Tangent` 接受任意曲线引用。
+    /// 返回：形式合法返回 true，此时才可安全加入系统求解。
     pub fn is_valid(&self) -> bool {
         match self {
             GeometricConstraint::Coincident(p1, p2) => {
@@ -1476,6 +1641,8 @@ impl GeometricConstraint {
 }
 
 impl DimensionalConstraint {
+    /// 返回该尺寸约束引用的实体下标（去重）。
+    /// 返回：距离与角度返回两个实体，半径与直径返回一个圆，长度返回一条线；引用自由参数的一侧不计入。
     pub fn get_constrained_entities(&self) -> Vec<usize> {
         match self {
             DimensionalConstraint::Distance(p1, p2, _) => {
@@ -1526,6 +1693,9 @@ impl DimensionalConstraint {
         }
     }
 
+    /// 检查尺寸约束是否合法：距离与角度要求引用实体且目标值为有限数（距离还须非负），
+    /// 半径、直径、长度要求目标值为有限非负数（引用形式不参与校验）。
+    /// 返回：合法返回 true。
     pub fn is_valid(&self) -> bool {
         match self {
             DimensionalConstraint::Distance(p1, p2, dist) => {
@@ -1551,9 +1721,17 @@ impl DimensionalConstraint {
     }
 }
 
+/// 约束构造辅助：以静态方法把常用几何/尺寸约束写入 `ConstraintSystem`，省去手工包装枚举。
+///
+/// 所有方法都直接修改传入的系统、不返回结果；`*_id` 为实体下标（即 `ConstraintSystem::add_entity` 的返回值），
+/// `point*_index` 为实体上的点序号（线取 0 起点、1 终点）。方法本身不做有效性校验。
 pub struct ConstraintBuilder;
 
 impl ConstraintBuilder {
+    /// 让两个实体上的点重合。
+    /// - `system`：目标约束系统。
+    /// - `entity1_id`/`point1_index`：第一个实体及其点序号。
+    /// - `entity2_id`/`point2_index`：第二个实体及其点序号。
     pub fn coincident(
         system: &mut ConstraintSystem,
         entity1_id: usize,
@@ -1568,6 +1746,7 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两个点处于同一水平位置（y 坐标相同），参数含义同 `coincident`。
     pub fn horizontal(
         system: &mut ConstraintSystem,
         entity1_id: usize,
@@ -1582,6 +1761,7 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两个点处于同一竖直位置（x 坐标相同），参数含义同 `coincident`。
     pub fn vertical(
         system: &mut ConstraintSystem,
         entity1_id: usize,
@@ -1596,6 +1776,8 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两条实体线平行。
+    /// - `line1_id`、`line2_id`：两条线的实体下标。
     pub fn parallel(
         system: &mut ConstraintSystem,
         line1_id: usize,
@@ -1608,6 +1790,8 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两条实体线垂直。
+    /// - `line1_id`、`line2_id`：两条线的实体下标。
     pub fn perpendicular(
         system: &mut ConstraintSystem,
         line1_id: usize,
@@ -1620,6 +1804,10 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两条曲线相切。
+    /// - `curve1_id`/`curve1_type`：第一条曲线的实体下标与类型。
+    /// - `curve2_id`/`curve2_type`：第二条曲线的实体下标与类型。
+    /// 注意求解器当前只支持线-圆与圆-圆相切，弧参与时残差按 0 处理（相当于不约束）。
     pub fn tangent(
         system: &mut ConstraintSystem,
         curve1_id: usize,
@@ -1643,6 +1831,8 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 让两个实体圆同心（圆心重合，半径互不影响）。
+    /// - `circle1_id`、`circle2_id`：两个圆的实体下标。
     pub fn concentric(
         system: &mut ConstraintSystem,
         circle1_id: usize,
@@ -1655,6 +1845,9 @@ impl ConstraintBuilder {
         system.add_geometric_constraint(constraint);
     }
 
+    /// 约束两点距离等于目标值。
+    /// - `entity1_id`/`point1_index`、`entity2_id`/`point2_index`：两个点所在的实体与点序号。
+    /// - `target_distance`：目标距离，非负，单位同实体坐标。
     pub fn distance(
         system: &mut ConstraintSystem,
         entity1_id: usize,
@@ -1671,6 +1864,9 @@ impl ConstraintBuilder {
         system.add_dimensional_constraint(constraint);
     }
 
+    /// 约束两条线的夹角等于目标值。
+    /// - `line1_id`、`line2_id`：两条线的实体下标。
+    /// - `target_angle`：目标夹角，单位为弧度。
     pub fn angle(
         system: &mut ConstraintSystem,
         line1_id: usize,
@@ -1685,6 +1881,9 @@ impl ConstraintBuilder {
         system.add_dimensional_constraint(constraint);
     }
 
+    /// 约束圆的半径等于目标值。
+    /// - `circle_id`：圆的实体下标。
+    /// - `target_radius`：目标半径，非负。
     pub fn radius(
         system: &mut ConstraintSystem,
         circle_id: usize,
@@ -1697,6 +1896,9 @@ impl ConstraintBuilder {
         system.add_dimensional_constraint(constraint);
     }
 
+    /// 约束圆的直径等于目标值，求解时按 2 × 半径与目标值比较。
+    /// - `circle_id`：圆的实体下标。
+    /// - `target_diameter`：目标直径，非负。
     pub fn diameter(
         system: &mut ConstraintSystem,
         circle_id: usize,
@@ -1709,6 +1911,9 @@ impl ConstraintBuilder {
         system.add_dimensional_constraint(constraint);
     }
 
+    /// 约束线的长度等于目标值（按两端点距离计算）。
+    /// - `line_id`：线的实体下标。
+    /// - `target_length`：目标长度，非负。
     pub fn length(
         system: &mut ConstraintSystem,
         line_id: usize,
@@ -1722,9 +1927,13 @@ impl ConstraintBuilder {
     }
 }
 
+/// 曲线类型标记：`ConstraintBuilder::tangent` 依据它把实体下标包装成对应的曲线引用。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CurveType {
+    /// 直线或线段。
     Line,
+    /// 圆。
     Circle,
+    /// 圆弧。
     Arc,
 }

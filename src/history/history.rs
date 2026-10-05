@@ -170,16 +170,19 @@ impl HistoryManager {
         }
 
         if self.transaction_depth > 0 {
-            let transaction_start = *self.transaction_stack.last().unwrap_or(&0);
+            let _transaction_start = *self.transaction_stack.last().unwrap_or(&0);
 
+            // 事务期间的所有操作合并进事务开始处插入的那条记录，
+            // 使整个事务在撤销栈中只占一步。
+            // 注意：标记记录的描述是 "Transaction: <描述>"，必须用前缀匹配。
             if let Some(last) = self.actions.last() {
-                if last.description == "Transaction" && last.action_type == ActionType::Modify {
+                if last.description.starts_with("Transaction:") && last.action_type == ActionType::Modify {
                     let combined_entities: Vec<String> = last.entity_ids.iter()
                         .chain(action.entity_ids.iter())
                         .cloned()
                         .collect();
 
-                    let mut last_action = self.actions.last_mut().unwrap();
+                    let last_action = self.actions.last_mut().unwrap();
                     last_action.entity_ids = combined_entities;
                     return;
                 }

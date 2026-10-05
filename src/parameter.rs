@@ -118,17 +118,46 @@ impl Parameter {
         true
     }
 
+    /// 校验取值是否可赋给该参数。
+    ///
+    /// 依次检查：类型匹配（例如 `String` 参数不能赋 `Real`）、显式范围
+    /// `minimum`/`maximum`、`Distance`/`Integer` 类型的非负约束，
+    /// 以及 `validation_rules` 中的自定义规则。任一不满足返回 `false`。
     pub fn validate(&self, value: &ParameterValue) -> bool {
+        // 非数值参数（字符串 / 点 / 列表）只做类型与自定义规则校验
+        if !value.is_numeric() {
+            return self
+                .validation_rules
+                .iter()
+                .all(|rule| rule.validate(value));
+        }
+        let num = value.to_f64();
+
+        // NaN 不可比较，一律视为非法
+        if num.is_nan() {
+            return false;
+        }
+
         if let Some(min) = self.minimum {
-            if value.to_f64() < min {
+            if num < min {
                 return false;
             }
         }
 
         if let Some(max) = self.maximum {
-            if value.to_f64() > max {
+            if num > max {
                 return false;
             }
+        }
+
+        // 未显式指定范围时，长度 / 整数类参数默认不允许负值
+        match self.data_type {
+            ParameterDataType::Distance | ParameterDataType::Integer => {
+                if self.minimum.is_none() && num < 0.0 {
+                    return false;
+                }
+            }
+            _ => {}
         }
 
         for rule in &self.validation_rules {
@@ -273,6 +302,12 @@ impl Default for ParameterValue {
 }
 
 impl ParameterValue {
+    /// 判断该取值是否为可参与范围比较的数值（`Real` / `Integer`）。
+    /// 布尔、字符串、点等类型返回 `false`。
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, ParameterValue::Real(_) | ParameterValue::Integer(_))
+    }
+
     pub fn to_f64(&self) -> f64 {
         match self {
             ParameterValue::Real(r) => *r,
@@ -470,25 +505,45 @@ impl ValidationRule {
         self
     }
 
+    /// 设置规则阈值（例如 `MinLength` 的最小长度、`MaxLength` 的最大长度）。
+    pub fn with_value(mut self, value: ParameterValue) -> Self {
+        self.value = value;
+        self
+    }
+
+    /// 规则阈值：优先取 `value`，未设置时回退为把 `message` 解析成数值。
+    fn threshold(&self) -> Option<f64> {
+        match self.value {
+            ParameterValue::Real(v) => Some(v),
+            ParameterValue::Integer(v) => Some(v as f64),
+            ParameterValue::Boolean(v) => Some(if v { 1.0 } else { 0.0 }),
+            _ => self.message.trim().parse::<f64>().ok(),
+        }
+    }
+
+    /// 校验取值是否满足规则。
+    ///
+    /// - `Required`：值不能为 `None`；
+    /// - `MinLength` / `MaxLength`：仅对字符串生效，比较字符数（非字符串一律通过）；
+    /// - `Pattern`：对字符串做通配符匹配（见 `xdata::wildcard_match`）；
+    /// - `Custom`：始终通过，由调用方自行判定。
     pub fn validate(&self, value: &ParameterValue) -> bool {
         match self.rule_type {
-            ValidationRuleType::Required => {
-                !matches!(value, ParameterValue::None)
-            }
-            ValidationRuleType::MinLength => {
-                if let ParameterValue::String(s) = value {
-                    s.len() >= self.value.to_f64() as usize
-                } else {
-                    true
-                }
-            }
-            ValidationRuleType::MaxLength => {
-                if let ParameterValue::String(s) = value {
-                    s.len() <= self.value.to_f64() as usize
-                } else {
-                    true
-                }
-            }
+            ValidationRuleType::Required => !matches!(value, ParameterValue::None),
+            ValidationRuleType::MinLength => match value {
+                ParameterValue::String(s) => match self.threshold() {
+                    Some(min) => s.chars().count() as f64 >= min,
+                    None => true,
+                },
+                _ => true,
+            },
+            ValidationRuleType::MaxLength => match value {
+                ParameterValue::String(s) => match self.threshold() {
+                    Some(max) => s.chars().count() as f64 <= max,
+                    None => true,
+                },
+                _ => true,
+            },
             ValidationRuleType::Pattern => {
                 if let ParameterValue::String(s) = value {
                     crate::xdata::wildcard_match(s, &self.message)
@@ -782,13 +837,29 @@ impl ParameterManager {
         self.active_group.as_deref()
     }
 
+    /// 按关键字搜索参数（名称 / 显示名 / 描述），不区分大小写。
+    ///
+    /// 查询串按空白拆分，所有词元都要命中（AND 语义），
+    /// 且每个词元是「某个字段包含该词元」，因此 `search("beam len")`
+    /// 能命中显示名为 `Length of beam` 的参数。
     pub fn search(&self, query: &str) -> Vec<&Parameter> {
-        let query_lower = query.to_lowercase();
-        self.parameters.values()
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        self.parameters
+            .values()
             .filter(|p| {
-                p.name.to_lowercase().contains(&query_lower)
-                    || p.display_name.to_lowercase().contains(&query_lower)
-                    || p.description.to_lowercase().contains(&query_lower)
+                if tokens.is_empty() {
+                    return true;
+                }
+                tokens.iter().all(|token| {
+                    p.name.to_lowercase().contains(token)
+                        || p.display_name.to_lowercase().contains(token)
+                        || p.description.to_lowercase().contains(token)
+                })
             })
             .collect()
     }

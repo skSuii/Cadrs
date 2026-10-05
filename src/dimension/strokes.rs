@@ -453,3 +453,431 @@ pub fn decompose(geometry: &EntityGeometry) -> Vec<(Vec<Point>, bool)> {
     out.extend(text_strokes(text, *text_position, h, *text_rotation));
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_structure::DimensionType;
+
+    /// 提取 Dimension 实体中的字段，便于断言
+    fn fields(e: &Entity) -> (
+        DimensionType,
+        f64,
+        String,
+        Point,
+        f64,
+        Point,
+        Point,
+        Point,
+        Point,
+        bool,
+        bool,
+    ) {
+        match e.geometry() {
+            EntityGeometry::Dimension {
+                dim_type,
+                measurement,
+                text,
+                text_position,
+                text_height,
+                definition_point,
+                def_point_1,
+                def_point_2,
+                def_point_3,
+                extension_lines,
+                center_marks,
+                ..
+            } => (
+                dim_type.clone(),
+                *measurement,
+                text.clone(),
+                *text_position,
+                *text_height,
+                *definition_point,
+                *def_point_1,
+                *def_point_2,
+                *def_point_3,
+                *extension_lines,
+                *center_marks,
+            ),
+            other => panic!("不是标注实体: {other:?}"),
+        }
+    }
+
+    fn bbox(strokes: &[(Vec<Point>, bool)]) -> (f64, f64, f64, f64) {
+        let mut b = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (pts, _) in strokes {
+            for p in pts {
+                b.0 = b.0.min(p.x);
+                b.1 = b.1.min(p.y);
+                b.2 = b.2.max(p.x);
+                b.3 = b.3.max(p.y);
+            }
+        }
+        b
+    }
+
+    fn has_stroke_between(strokes: &[(Vec<Point>, bool)], a: Point, b: Point) -> bool {
+        strokes.iter().any(|(pts, _)| {
+            pts.first().map(|f| f.distance_to(&a)).unwrap_or(f64::MAX) < 1e-9
+                && pts.last().map(|l| l.distance_to(&b)).unwrap_or(f64::MAX) < 1e-9
+        })
+    }
+
+    // ---------------- 文字笔画字体 ----------------
+
+    #[test]
+    fn text_strokes_digits_and_symbols() {
+        for s in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "R", "Ø", "°", ".", "-"] {
+            let strokes = text_strokes(s, Point::origin(), 2.0, 0.0);
+            assert!(!strokes.is_empty(), "字符 {s} 缺少笔画");
+            for (pts, _) in &strokes {
+                assert!(pts.len() >= 2, "字符 {s} 存在退化笔画");
+                for p in pts {
+                    assert!(p.x.is_finite() && p.y.is_finite(), "字符 {s} 出现非法坐标");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_width_scales_with_height() {
+        let w1 = text_width("R12.5", 2.0);
+        let w2 = text_width("R12.5", 4.0);
+        assert!(w1 > 0.0);
+        assert!((w2 - w1 * 2.0).abs() < 1e-9, "文字宽度应随字高线性缩放");
+        // 未知字符按 0.5 单位宽度回退，不应 panic
+        assert!(text_width("中", 2.0) > 0.0);
+    }
+
+    #[test]
+    fn text_strokes_respect_rotation() {
+        let straight = text_strokes("1", Point::origin(), 2.0, 0.0);
+        let rotated = text_strokes("1", Point::origin(), 2.0, std::f64::consts::FRAC_PI_2);
+        let (sx0, sy0, sx1, sy1) = bbox(&straight);
+        let (rx0, ry0, rx1, ry1) = bbox(&rotated);
+        // 旋转 90° 后宽度与高度互换
+        assert!(((sx1 - sx0) - (ry1 - ry0)).abs() < 1e-9);
+        assert!(((sy1 - sy0) - (rx1 - rx0)).abs() < 1e-9);
+    }
+
+    // ---------------- 线性标注 ----------------
+
+    #[test]
+    fn linear_dimension_measures_and_labels() {
+        let e = make_linear(
+            Point::new2d(0.0, 0.0),
+            Point::new2d(10.0, 0.0),
+            Point::new2d(5.0, 4.0),
+            2.5,
+        )
+        .expect("线性标注应构造成功");
+        let (ty, m, text, _tp, th, _dp, p1, p2, _p3, ext, cm) = fields(&e);
+        assert_eq!(ty, DimensionType::Aligned);
+        assert!((m - 10.0).abs() < 1e-9);
+        assert_eq!(text, "10");
+        assert!((th - 2.5).abs() < 1e-9);
+        assert!(p1.distance_to(&Point::new2d(0.0, 0.0)) < 1e-9);
+        assert!(p2.distance_to(&Point::new2d(10.0, 0.0)) < 1e-9);
+        assert!(ext, "线性标注应带尺寸界线");
+        assert!(!cm, "线性标注不应带圆心标记");
+
+        let strokes = decompose(e.geometry());
+        assert!(strokes.len() > 2, "线性标注应包含尺寸线、箭头与文字");
+        assert!(has_stroke_between(
+            &strokes,
+            Point::new2d(0.0, 4.0),
+            Point::new2d(10.0, 4.0)
+        ));
+        let (x0, y0, x1, y1) = bbox(&strokes);
+        assert!(x0.is_finite() && y0.is_finite() && x1 > x0 && y1 > y0);
+    }
+
+    #[test]
+    fn linear_dimension_rejects_degenerate_input() {
+        assert!(make_linear(Point::origin(), Point::origin(), Point::new2d(1.0, 1.0), 2.5).is_none());
+        assert!(make_linear(
+            Point::origin(),
+            Point::new2d(10.0, 0.0),
+            Point::new2d(5.0, 1.0),
+            0.0
+        )
+        .is_none());
+    }
+
+    // ---------------- 半径标注 ----------------
+
+    #[test]
+    fn radial_dimension_geometry() {
+        let center = Point::new2d(50.0, 50.0);
+        let radius = 10.0;
+        let aim = Point::new2d(60.0, 50.0); // 右侧象限点
+        let e = make_radial(center, radius, aim, false, 2.5).expect("半径标注应构造成功");
+
+        let (ty, m, text, text_pos, _th, dp, p1, p2, _p3, ext, cm) = fields(&e);
+        assert_eq!(ty, DimensionType::Radius);
+        assert!((m - radius).abs() < 1e-9, "半径测量值应为 10");
+        assert_eq!(text, "R10");
+        assert!(dp.distance_to(&aim) < 1e-9, "定义点应位于圆周上");
+        assert!(p1.distance_to(&center) < 1e-9, "def_point_1 应为圆心");
+        assert!(p2.distance_to(&aim) < 1e-9, "def_point_2 应为圆周点");
+        assert!(!ext, "半径标注无需尺寸界线");
+        assert!(cm, "半径标注应带圆心标记");
+        assert!(text_pos.x > aim.x, "文字应位于圆周外侧");
+
+        let strokes = decompose(e.geometry());
+        // 尺寸线（圆心 → 圆周）+ 箭头 + 圆心标记 2 条 + 文字笔画
+        assert!(strokes.len() >= 5, "实际笔画数 {}", strokes.len());
+        assert!(has_stroke_between(&strokes, center, aim), "缺少圆心到圆周的尺寸线");
+        // 圆心标记为十字
+        assert!(has_stroke_between(
+            &strokes,
+            Point::new2d(center.x - 2.5 * 0.25, center.y),
+            Point::new2d(center.x + 2.5 * 0.25, center.y)
+        ));
+        let (x0, y0, x1, y1) = bbox(&strokes);
+        assert!(x0 >= center.x - radius - 2.5 - 1e-6, "标注越界: {x0}");
+        assert!(y1 <= center.y + radius + 1e-6, "标注越界: {y1}");
+    }
+
+    #[test]
+    fn radial_dimension_direction_follows_aim() {
+        let center = Point::origin();
+        let radius = 5.0;
+        // 明确朝向 +x、+y、-x、-y 四个方向
+        for aim in [
+            Point::new2d(5.0, 0.0),
+            Point::new2d(0.0, 5.0),
+            Point::new2d(-5.0, 0.0),
+            Point::new2d(0.0, -5.0),
+        ] {
+            let e = make_radial(center, radius, aim, false, 2.5).unwrap();
+            let (_ty, _m, _t, text_pos, _th, dp, _p1, _p2, _p3, _ext, _cm) = fields(&e);
+            assert!(dp.distance_to(&aim) < 1e-9, "定义点未落在指定方向");
+            assert!(
+                text_pos.distance_to(&center) > radius,
+                "文字应始终位于圆周外侧"
+            );
+            // 文字方向与 aim 方向一致（点积为正）
+            let v = text_pos - center;
+            let u = aim - center;
+            assert!(v.dot(&u) > 0.0, "文字应沿标注方向放置");
+        }
+    }
+
+    /// 关键回归：圆心与 aim 重合（例如对象捕捉把光标吸附到圆心）时，
+    /// 半径/直径方向不可用，但不得 panic、不得产生 NaN，且仍需给出可读标注。
+    #[test]
+    fn radial_dimension_handles_aim_at_center() {
+        let center = Point::new2d(3.0, 7.0);
+        let e = make_radial(center, 4.0, center, false, 2.5).expect("应退化为默认方向而不是失败");
+        let (_ty, m, text, text_pos, _th, dp, _p1, _p2, _p3, _ext, _cm) = fields(&e);
+        assert!((m - 4.0).abs() < 1e-9);
+        assert_eq!(text, "R4");
+        assert!(dp.distance_to(&center) - 4.0 < 1e-9, "定义点应落在圆周上");
+        assert!(text_pos.x.is_finite() && text_pos.y.is_finite());
+        for (pts, _) in decompose(e.geometry()) {
+            for p in pts {
+                assert!(p.x.is_finite() && p.y.is_finite(), "退化输入产生了非法坐标");
+            }
+        }
+    }
+
+    #[test]
+    fn radial_dimension_rejects_invalid_input() {
+        let c = Point::origin();
+        assert!(make_radial(c, 0.0, Point::new2d(1.0, 0.0), false, 2.5).is_none());
+        assert!(make_radial(c, -1.0, Point::new2d(1.0, 0.0), false, 2.5).is_none());
+        assert!(make_radial(c, 5.0, Point::new2d(5.0, 0.0), false, 0.0).is_none());
+    }
+
+    // ---------------- 直径标注 ----------------
+
+    #[test]
+    fn diameter_dimension_geometry() {
+        let center = Point::new2d(0.0, 0.0);
+        let radius = 6.0;
+        let aim = Point::new2d(6.0, 0.0);
+        let e = make_radial(center, radius, aim, true, 2.5).expect("直径标注应构造成功");
+
+        let (ty, m, text, text_pos, _th, dp, p1, p2, p3, _ext, cm) = fields(&e);
+        assert_eq!(ty, DimensionType::Diameter);
+        assert!((m - radius * 2.0).abs() < 1e-9, "直径测量值应为 12");
+        assert_eq!(text, "Ø12");
+        assert!(text.starts_with('Ø'), "直径标注应带 Ø 前缀");
+        assert!(dp.distance_to(&aim) < 1e-9);
+        assert!(p1.distance_to(&center) < 1e-9);
+        assert!(p2.distance_to(&aim) < 1e-9);
+        assert!(
+            p3.distance_to(&Point::new2d(-radius, 0.0)) < 1e-9,
+            "直径标注应记录对侧点"
+        );
+        assert!(cm, "直径标注应带圆心标记");
+        assert!(text_pos.x > aim.x);
+
+        let strokes = decompose(e.geometry());
+        // 对侧点 → 圆周点的整条直径线
+        assert!(has_stroke_between(
+            &strokes,
+            Point::new2d(-radius, 0.0),
+            Point::new2d(radius, 0.0)
+        ));
+        // 两端箭头（尖端分别位于两个圆周点上）
+        let tips: Vec<Point> = strokes
+            .iter()
+            .filter(|(pts, closed)| *closed && pts.len() == 3)
+            .map(|(pts, _)| pts[0])
+            .collect();
+        assert!(
+            tips.iter().any(|t| t.distance_to(&Point::new2d(radius, 0.0)) < 1e-9),
+            "缺少 +x 侧箭头"
+        );
+        assert!(
+            tips.iter().any(|t| t.distance_to(&Point::new2d(-radius, 0.0)) < 1e-9),
+            "缺少 -x 侧箭头"
+        );
+    }
+
+    #[test]
+    fn diameter_dimension_text_matches_measurement() {
+        for radius in [0.5, 1.0, 2.5, 12.25, 100.0] {
+            let e = make_radial(
+                Point::origin(),
+                radius,
+                Point::new2d(radius, 0.0),
+                true,
+                2.5,
+            )
+            .unwrap();
+            let (_ty, m, text, _tp, _th, _dp, _p1, _p2, _p3, _ext, _cm) = fields(&e);
+            assert!((m - radius * 2.0).abs() < 1e-9);
+            let value = text.trim_start_matches('Ø');
+            let parsed: f64 = value.parse().expect("直径文字应为数值");
+            assert!(
+                (parsed - radius * 2.0).abs() < 0.01,
+                "文字 {text} 与实际直径 {} 不符",
+                radius * 2.0
+            );
+        }
+    }
+
+    // ---------------- 角度标注 ----------------
+
+    #[test]
+    fn angular_dimension_geometry() {
+        let vertex = Point::origin();
+        let e = make_angular(
+            vertex,
+            Point::new2d(10.0, 0.0),
+            Point::new2d(0.0, 10.0),
+            2.5,
+        )
+        .expect("角度标注应构造成功");
+        let (ty, m, text, _tp, _th, _dp, p1, p2, p3, ext, cm) = fields(&e);
+        assert_eq!(ty, DimensionType::Angular);
+        assert!((m - 90.0).abs() < 1e-9, "夹角应为 90°，实际 {m}");
+        assert_eq!(text, "90°");
+        assert!(p1.distance_to(&vertex) < 1e-9, "def_point_1 应为顶点");
+        assert!(
+            (p2.distance_to(&vertex) - 10.0).abs() < 1e-9,
+            "def_point_2 应为起始边上的弧起点"
+        );
+        assert!(
+            (p3.distance_to(&vertex) - 10.0).abs() < 1e-9,
+            "def_point_3 应为终止边上的弧终点"
+        );
+        assert!(ext, "角度标注应带尺寸界线");
+        assert!(!cm);
+
+        let strokes = decompose(e.geometry());
+        assert!(strokes.len() >= 4, "角度标注应含圆弧、界线、箭头与文字");
+        // 圆弧采样点的半径应等于第一条边长
+        let (arc, _) = strokes.first().unwrap();
+        for p in arc {
+            assert!((p.distance_to(&vertex) - 10.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn angular_dimension_rejects_degenerate_input() {
+        let v = Point::origin();
+        assert!(make_angular(v, v, Point::new2d(1.0, 0.0), 2.5).is_none());
+        assert!(make_angular(v, Point::new2d(1.0, 0.0), v, 2.5).is_none());
+        assert!(make_angular(v, Point::new2d(1.0, 0.0), Point::new2d(1.0, 0.0), 2.5).is_none());
+        assert!(make_angular(v, Point::new2d(1.0, 0.0), Point::new2d(0.0, 1.0), 0.0).is_none());
+    }
+
+    // ---------------- 分解与集成 ----------------
+
+    #[test]
+    fn decompose_ignores_non_dimension_geometry() {
+        let other = EntityGeometry::Line(crate::geometry::Line::new(
+            Point::origin(),
+            Point::new2d(1.0, 1.0),
+        ));
+        assert!(decompose(&other).is_empty());
+    }
+
+    #[test]
+    fn decompose_rejects_non_positive_text_height() {
+        let e = make_radial(Point::origin(), 5.0, Point::new2d(5.0, 0.0), false, 2.5).unwrap();
+        let mut g = e.geometry().clone();
+        if let EntityGeometry::Dimension { text_height, .. } = &mut g {
+            *text_height = 0.0;
+        }
+        assert!(decompose(&g).is_empty());
+    }
+
+    /// 标注几何应能被通用细分管线渲染 / 导出（tessellation 走 decompose）
+    #[test]
+    fn dimension_geometry_is_tessellated() {
+        use crate::render::tessellation::{document_bbox, geometry_polylines};
+        for e in [
+            make_linear(
+                Point::new2d(0.0, 0.0),
+                Point::new2d(10.0, 0.0),
+                Point::new2d(5.0, 4.0),
+                2.5,
+            )
+            .unwrap(),
+            make_radial(Point::origin(), 5.0, Point::new2d(5.0, 0.0), false, 2.5).unwrap(),
+            make_radial(Point::origin(), 5.0, Point::new2d(0.0, 5.0), true, 2.5).unwrap(),
+            make_angular(
+                Point::origin(),
+                Point::new2d(5.0, 0.0),
+                Point::new2d(0.0, 5.0),
+                2.5,
+            )
+            .unwrap(),
+        ] {
+            let polylines = geometry_polylines(e.geometry());
+            assert!(!polylines.is_empty(), "标注实体未产生任何折线");
+
+            let mut doc = crate::data_structure::Document::new("t".to_string());
+            doc.add_entity(e);
+            let (min, max) = document_bbox(&doc).expect("文档包围盒应包含标注");
+            assert!(min.x.is_finite() && max.x.is_finite());
+            assert!(max.x > min.x || max.y > min.y);
+        }
+    }
+
+    #[test]
+    fn readable_keeps_text_upright() {
+        let pi = std::f64::consts::PI;
+        // 第一、四象限方向保持原角
+        assert!((readable(0.0) - 0.0).abs() < 1e-12);
+        assert!((readable(pi / 4.0) - pi / 4.0).abs() < 1e-12);
+        // 指向左侧时翻转 180°，保证从左到右可读
+        let r = readable(pi);
+        assert!((r - 0.0).abs() < 1e-12 || (r - 2.0 * pi).abs() < 1e-12);
+    }
+
+    #[test]
+    fn number_formatting_trims_trailing_zeros() {
+        assert_eq!(fmt_num(10.0), "10");
+        assert_eq!(fmt_num(10.5), "10.5");
+        assert_eq!(fmt_num(10.25), "10.25");
+        assert_eq!(fmt_angle(90.0), "90");
+        assert_eq!(fmt_angle(45.5), "45.5");
+    }
+}

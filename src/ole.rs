@@ -207,9 +207,16 @@ impl OleObject {
         }
     }
 
+    /// 断开外部链接，把对象就地转为嵌入对象。
+    ///
+    /// 清除 `link_path` 与 `source_item`，类型改为 [`OleObjectType::Embed`]，
+    /// 状态改为 [`OleObjectState::Closed`]（图形内容保留，不再随源文件更新）。
     pub fn break_link(&mut self) {
         self.link_path = None;
         self.source_item.clear();
+        if self.object_type == OleObjectType::Link {
+            self.object_type = OleObjectType::Embed;
+        }
         self.object_state = OleObjectState::Closed;
     }
 
