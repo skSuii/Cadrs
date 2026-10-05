@@ -216,7 +216,7 @@ impl MTextWithColumns {
             return;
         }
 
-        let total_capacity = self.columns.iter().map(|c| c.height as usize).sum();
+        let total_capacity: usize = self.columns.iter().map(|c| c.height as usize).sum();
         let mut current_column = 0;
         let mut current_height = 0.0;
 

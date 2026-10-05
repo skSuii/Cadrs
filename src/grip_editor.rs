@@ -12,7 +12,7 @@ pub struct Grip {
     pub is_highlighted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GripId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -185,13 +185,13 @@ impl EntityGrips {
                 for (i, vertex) in polyline.vertices.iter().enumerate() {
                     grips.push(Grip::new(
                         GripId(grip_id),
-                        *vertex,
+                        Point::new(vertex.x, vertex.y, 0.0),
                         GripType::Vertex,
                     ));
                     grip_id += 1;
-                    
+
                     if i < polyline.vertices.len().saturating_sub(1) {
-                        let next = polyline.vertices[i + 1];
+                        let next = &polyline.vertices[i + 1];
                         let midpoint = Point::new(
                             (vertex.x + next.x) / 2.0,
                             (vertex.y + next.y) / 2.0,
@@ -206,9 +206,9 @@ impl EntityGrips {
                     }
                 }
             }
-            
+
             EntityGeometry::BSpline(spline) => {
-                for (i, point) in spline.control_points.iter().enumerate() {
+                for (i, point) in spline.control_points().iter().enumerate() {
                     grips.push(Grip::new(
                         GripId(grip_id),
                         *point,
@@ -217,26 +217,34 @@ impl EntityGrips {
                     grip_id += 1;
                 }
             }
-            
-            EntityGeometry::Dimension(_) => {
-                if let Some(dimension_geometry) = &entity.dimension_geometry {
-                    for point in &dimension_geometry.definition_points {
-                        grips.push(Grip::new(
-                            GripId(grip_id),
-                            *point,
-                            GripType::Endpoint,
-                        ));
-                        grip_id += 1;
-                    }
-                    
-                    if let Some(text_location) = dimension_geometry.text_location {
-                        grips.push(Grip::new(
-                            GripId(grip_id),
-                            text_location,
-                            GripType::Midpoint,
-                        ));
-                    }
-                }
+
+            EntityGeometry::Dimension { definition_point, def_point_1, def_point_2, text_position, .. } => {
+                grips.push(Grip::new(
+                    GripId(grip_id),
+                    *definition_point,
+                    GripType::Endpoint,
+                ));
+                grip_id += 1;
+
+                grips.push(Grip::new(
+                    GripId(grip_id),
+                    *def_point_1,
+                    GripType::Endpoint,
+                ));
+                grip_id += 1;
+
+                grips.push(Grip::new(
+                    GripId(grip_id),
+                    *def_point_2,
+                    GripType::Endpoint,
+                ));
+                grip_id += 1;
+
+                grips.push(Grip::new(
+                    GripId(grip_id),
+                    *text_position,
+                    GripType::Midpoint,
+                ));
             }
             
             _ => {}
@@ -323,7 +331,7 @@ impl GripEditor {
     }
     
     pub fn set_entity_grips(&mut self, entity_id: ObjectId, entity: &Entity) {
-        let entity_grips = EntityGrips::new(entity_id, entity);
+        let entity_grips = EntityGrips::new(entity_id.clone(), entity);
         self.entity_grips.insert(entity_id, entity_grips);
     }
     
@@ -346,14 +354,14 @@ impl GripEditor {
     pub fn find_grip_at_point(&self, point: Point, tolerance: f64) -> Option<(ObjectId, GripId)> {
         for (entity_id, entity_grips) in &self.entity_grips {
             if let Some(grip_id) = entity_grips.contains_point(point, tolerance) {
-                return Some((*entity_id, grip_id));
+                return Some((entity_id.clone(), grip_id));
             }
         }
         None
     }
     
     pub fn start_drag(&mut self, entity_id: ObjectId, grip_id: GripId) -> Option<Point> {
-        self.dragged_grip = Some((entity_id, grip_id));
+        self.dragged_grip = Some((entity_id.clone(), grip_id));
         
         if let Some(entity_grips) = self.entity_grips.get_mut(&entity_id) {
             if let Some(grip) = entity_grips.get_grip_by_id_mut(grip_id) {
@@ -368,7 +376,7 @@ impl GripEditor {
     pub fn drag_to(&mut self, new_position: Point) -> Vec<(ObjectId, GripId, Point)> {
         let mut moved_grips = Vec::new();
         
-        if let Some((entity_id, grip_id)) = self.dragged_grip {
+        if let Some((entity_id, grip_id)) = self.dragged_grip.clone() {
             if let Some(entity_grips) = self.entity_grips.get_mut(&entity_id) {
                 if let Some(grip) = entity_grips.get_grip_by_id_mut(grip_id) {
                     let old_position = grip.position;
@@ -384,11 +392,11 @@ impl GripEditor {
     pub fn end_drag(&mut self) -> Vec<((ObjectId, GripId), Point)> {
         let mut changes = Vec::new();
         
-        if let Some((entity_id, grip_id)) = self.dragged_grip {
+        if let Some((entity_id, grip_id)) = self.dragged_grip.clone() {
             if let Some(entity_grips) = self.entity_grips.get_mut(&entity_id) {
                 if let Some(grip) = entity_grips.get_grip_by_id_mut(grip_id) {
                     grip.end_drag();
-                    if let Some(original) = self.original_positions.remove(&(entity_id, grip_id)) {
+                    if let Some(original) = self.original_positions.remove(&(entity_id.clone(), grip_id.clone())) {
                         changes.push(((entity_id, grip_id), original));
                     }
                 }
@@ -400,7 +408,7 @@ impl GripEditor {
     }
     
     pub fn cancel_drag(&mut self) {
-        if let Some((entity_id, grip_id)) = self.dragged_grip {
+        if let Some((entity_id, grip_id)) = self.dragged_grip.clone() {
             if let Some(entity_grips) = self.entity_grips.get_mut(&entity_id) {
                 if let Some(grip) = entity_grips.get_grip_by_id_mut(grip_id) {
                     if let Some(original) = self.original_positions.get(&(entity_id, grip_id)) {
@@ -503,19 +511,21 @@ impl GripEditor {
                 for grip in &entity_grips.grips {
                     if let GripType::Vertex = grip.grip_type {
                         for vertex in &mut polyline.vertices {
-                            if vertex.distance_to(&grip.position) < 1e-6 {
-                                *vertex = grip.position;
+                            if (vertex.x - grip.position.x).abs() < 1e-6 &&
+                               (vertex.y - grip.position.y).abs() < 1e-6 {
+                                vertex.x = grip.position.x;
+                                vertex.y = grip.position.y;
                                 break;
                             }
                         }
                     }
                 }
             }
-            
+
             EntityGeometry::BSpline(spline) => {
                 for grip in &entity_grips.grips {
                     if let GripType::ControlPoint = grip.grip_type {
-                        for point in &mut spline.control_points {
+                        for point in spline.control_points_mut() {
                             if point.distance_to(&grip.position) < 1e-6 {
                                 *point = grip.position;
                                 break;

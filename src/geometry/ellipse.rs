@@ -72,6 +72,21 @@ impl Ellipse {
 
         ((local_x / self.semi_major).powi(2) + (local_y / self.semi_minor).powi(2)) <= 1.0 + 1e-10
     }
+
+    #[inline]
+    pub fn major_axis(&self) -> f64 {
+        self.semi_major * 2.0
+    }
+
+    #[inline]
+    pub fn minor_axis(&self) -> f64 {
+        self.semi_minor * 2.0
+    }
+
+    #[inline]
+    pub fn center(&self) -> Point {
+        self.center
+    }
 }
 
 impl fmt::Display for Ellipse {

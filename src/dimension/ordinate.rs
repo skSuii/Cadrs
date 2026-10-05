@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Vector2, Line};
 use crate::data_structure::{Entity, EntityType, EntityGeometry};
+use super::linear::{DimensionGeometry, DimensionStyle, DimensionType};
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
@@ -225,9 +226,11 @@ impl OrdinateDimension {
 
 impl From<OrdinateDimension> for Entity {
     fn from(dim: OrdinateDimension) -> Self {
+        let leader_point = dim.leader_point;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::OrdinateDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, leader_point, 0.0, false, false),
         )
     }
 }
@@ -258,7 +261,7 @@ impl OrdinateDimensionSet {
         let y_dimensions = OrdinateDimension::from_baseline(
             origin,
             y_points,
-            style,
+            style.clone(),
             OrdinateOrientation::Vertical,
         );
         

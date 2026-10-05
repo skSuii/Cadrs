@@ -58,6 +58,18 @@ impl Default for OleObjectState {
     }
 }
 
+impl OleObjectState {
+    pub fn name(&self) -> &str {
+        match self {
+            OleObjectState::Closed => "Closed",
+            OleObjectState::Open => "Open",
+            OleObjectState::Linked => "Linked",
+            OleObjectState::Updated => "Updated",
+            OleObjectState::Broken => "Broken",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OleObject {
     pub id: String,
@@ -242,6 +254,18 @@ pub enum BorderStyle {
 impl Default for BorderStyle {
     fn default() -> Self {
         BorderStyle::None
+    }
+}
+
+impl BorderStyle {
+    pub fn name(&self) -> &str {
+        match self {
+            BorderStyle::None => "None",
+            BorderStyle::Thin => "Thin",
+            BorderStyle::Medium => "Medium",
+            BorderStyle::Thick => "Thick",
+            BorderStyle::Custom(_) => "Custom",
+        }
     }
 }
 
@@ -507,6 +531,7 @@ pub struct OleStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Point;
 
     #[test]
     fn test_ole_object_creation() {

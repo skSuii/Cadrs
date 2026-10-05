@@ -1,4 +1,4 @@
-use super::geometry::Point;
+use crate::geometry::Point;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +43,7 @@ impl BoundingBox2D {
         Point::new(
             (self.min_x + self.max_x) / 2.0,
             (self.min_y + self.max_y) / 2.0,
+            0.0,
         )
     }
 
@@ -187,7 +188,8 @@ impl<T: SpatialObject> RTreeChild<T> {
     }
 }
 
-use std::cell::{RefCell, Rc};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const MIN_ENTRIES_PER_NODE: usize = 2;
 const MAX_ENTRIES_PER_NODE: usize = 8;
@@ -294,7 +296,7 @@ impl<T: SpatialObject + Clone> RTree<T> {
                 .collect()
         };
 
-        let (group1, group2) = self quadratic_split(&entries);
+        let (group1, group2) = self.quadratic_split(&entries);
 
         {
             let mut node_ref = node.borrow_mut();
@@ -543,13 +545,14 @@ impl<T: SpatialObject + Clone> RTree<T> {
     }
 
     pub fn nearest_neighbor(&self, point: &Point) -> Option<T> {
-        let candidates = self.query_bbox(&point.bounding_box().expand(1e6));
+        let point_bbox = BoundingBox2D::new(point.x, point.y, point.x, point.y).expand(1e6);
+        let candidates = self.query_bbox(&point_bbox);
         candidates.into_iter()
             .min_by(|a, b| {
                 let bbox_a = a.bounding_box();
                 let bbox_b = b.bounding_box();
-                let dist_a = bbox_a.center().distance_to(*point);
-                let dist_b = bbox_b.center().distance_to(*point);
+                let dist_a = bbox_a.center().distance_to(point);
+                let dist_b = bbox_b.center().distance_to(point);
                 dist_a.partial_cmp(&dist_b).unwrap()
             })
     }
@@ -569,7 +572,7 @@ impl<T: SpatialObject + Clone> RTree<T> {
     }
 }
 
-impl<T: SpatialObject> Default for RTree<T> {
+impl<T: SpatialObject + Clone> Default for RTree<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -611,7 +614,7 @@ impl<T: SpatialObject + Clone> QuadtreeNode<T> {
         }
 
         for child in self.children.as_mut().unwrap().iter_mut() {
-            if child.insert(entry.clone()) {
+            if child.insert(entry.object.clone()) {
                 return true;
             }
         }
@@ -661,7 +664,7 @@ impl<T: SpatialObject + Clone> QuadtreeNode<T> {
             let mut inserted = false;
             for child in children.iter_mut() {
                 if child.bounding_box.contains(&obj.bounding_box) {
-                    if child.insert(obj.clone()) {
+                    if child.insert(obj.object.clone()) {
                         inserted = true;
                         break;
                     }
@@ -961,7 +964,7 @@ pub struct SpatialIndexFactory;
 
 impl SpatialIndexFactory {
     pub fn create_rtree<T: SpatialObject + Clone>() -> RTree<T> {
-        RTree::new()
+        RTree::<T>::new()
     }
 
     pub fn create_quadtree<T: SpatialObject + Clone>(bounding_box: BoundingBox2D) -> QuadtreeNode<T> {

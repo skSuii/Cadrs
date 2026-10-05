@@ -1,7 +1,5 @@
 #[cfg(feature = "gpu")]
-use wgpu::{util::DeviceExt, Device, Queue, RenderPipeline, PipelineLayout, BindGroup, Buffer, Texture};
-#[cfg(feature = "gpu")]
-use std::num::NonZeroU32;
+use wgpu::{util::DeviceExt, Device, Queue, RenderPipeline};
 
 #[cfg(feature = "gpu")]
 const VERTEX_SHADER_SOURCE: &str = r#"
@@ -30,50 +28,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 #[cfg(feature = "gpu")]
-const LINE_VERTEX_SHADER: &str = r#"
-struct Uniforms {
-    screen_size: vec2<f32>,
-    line_width: f32,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-}
-
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    let clip_pos = input.position / uniforms.screen_size * 2.0 - 1.0;
-    output.position = vec4<f32>(clip_pos.x, -clip_pos.y, 0.0, 1.0);
-    output.color = input.color;
-    return output;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
-}
-"#;
-
-#[cfg(feature = "gpu")]
 #[derive(Debug)]
-pub struct WGPURenderer {
+pub struct WGPURenderer<'window> {
+    instance: wgpu::Instance,
     device: Option<Device>,
     queue: Option<Queue>,
-    surface: Option<wgpu::Surface>,
-    context: Option<wgpu::SurfaceContext>,
+    surface: Option<wgpu::Surface<'window>>,
     config: Option<wgpu::SurfaceConfiguration>,
     render_pipeline: Option<RenderPipeline>,
-    vertex_buffer: Option<Buffer>,
-    uniform_buffer: Option<Buffer>,
     current_width: u32,
     current_height: u32,
     pending_vertices: Vec<RenderVertex>,
@@ -87,47 +49,70 @@ struct RenderVertex {
 }
 
 #[cfg(feature = "gpu")]
-#[derive(Debug)]
-struct Uniforms {
-    screen_size: [f32; 2],
-    line_width: f32,
-}
-
-#[cfg(feature = "gpu")]
-impl WGPURenderer {
-    pub async fn new(canvas: &web_sys::HtmlCanvasElement) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::GL,
+impl<'window> WGPURenderer<'window> {
+    pub fn new() -> Result<Self, String> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
             dx12_shader_compiler: wgpu::Dx12Compiler::default(),
-            gles_minor_version: Default::default(),
+            gles_minor_version: wgpu::Gles3MinorVersion::default(),
         });
 
-        let surface = instance.create_surface_from_canvas(canvas)
+        Ok(Self {
+            instance,
+            device: None,
+            queue: None,
+            surface: None,
+            config: None,
+            render_pipeline: None,
+            current_width: 1,
+            current_height: 1,
+            pending_vertices: Vec::new(),
+        })
+    }
+
+    pub async fn attach_surface(
+        &mut self,
+        target: impl Into<wgpu::SurfaceTarget<'window>>,
+    ) -> Result<(), String> {
+        let surface = self
+            .instance
+            .create_surface(target)
             .map_err(|e| format!("Failed to create surface: {:?}", e))?;
 
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }).await
+        let adapter = self
+            .instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
             .ok_or("No suitable GPU adapter found")?;
 
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("CAD GPU Device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-        }, None).await
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("CAD GPU Device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                },
+                None,
+            )
+            .await
             .map_err(|e| format!("Failed to request device: {:?}", e))?;
 
         let surface_capabilities = surface.get_capabilities(&adapter);
-        let format = surface_capabilities.formats.iter()
-            .find(|f| f.describe().srgb)
+        let format = surface_capabilities
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_capabilities.formats[0]);
 
-        let width = canvas.width().max(1);
-        let height = canvas.height().max(1);
+        let width = self.current_width.max(1);
+        let height = self.current_height.max(1);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -137,6 +122,7 @@ impl WGPURenderer {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
+            desired_maximum_frame_latency: 2,
         };
 
         surface.configure(&device, &config);
@@ -157,7 +143,8 @@ impl WGPURenderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<RenderVertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -177,7 +164,8 @@ impl WGPURenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -189,6 +177,9 @@ impl WGPURenderer {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
@@ -197,34 +188,30 @@ impl WGPURenderer {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
-        Ok(Self {
-            device: Some(device),
-            queue: Some(queue),
-            surface: Some(surface),
-            context: None,
-            config: Some(config),
-            render_pipeline: Some(render_pipeline),
-            vertex_buffer: None,
-            uniform_buffer: None,
-            current_width: width,
-            current_height: height,
-            pending_vertices: Vec::new(),
-        })
+        self.device = Some(device);
+        self.queue = Some(queue);
+        self.surface = Some(surface);
+        self.config = Some(config);
+        self.render_pipeline = Some(render_pipeline);
+        Ok(())
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if let (Some(device), Some(surface), Some(config)) = (&self.device, &self.surface, &mut self.config) {
-            self.current_width = width.max(1);
-            self.current_height = height.max(1);
+        self.current_width = width.max(1);
+        self.current_height = height.max(1);
+        if let (Some(device), Some(surface), Some(config)) =
+            (&self.device, &self.surface, &mut self.config)
+        {
             config.width = self.current_width;
             config.height = self.current_height;
             surface.configure(device, config);
         }
     }
 
-    pub fn clear(&mut self, r: f32, g: f32, b: f32, a: f32) {
+    pub fn clear(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {
         self.pending_vertices.clear();
     }
 
@@ -262,14 +249,33 @@ impl WGPURenderer {
             return;
         }
 
-        let (device, queue, surface, config) = match (
-            self.device.take(),
-            self.queue.take(),
-            self.surface.take(),
-            self.config.take(),
-        ) {
-            (Some(d), Some(q), Some(s), Some(c)) => (d, q, s, c),
-            _ => return,
+        let device = match self.device.take() {
+            Some(d) => d,
+            None => return,
+        };
+        let queue = match self.queue.take() {
+            Some(q) => q,
+            None => {
+                self.device = Some(device);
+                return;
+            }
+        };
+        let surface = match self.surface.take() {
+            Some(s) => s,
+            None => {
+                self.device = Some(device);
+                self.queue = Some(queue);
+                return;
+            }
+        };
+        let config = match self.config.take() {
+            Some(c) => c,
+            None => {
+                self.device = Some(device);
+                self.queue = Some(queue);
+                self.surface = Some(surface);
+                return;
+            }
         };
 
         let frame = match surface.get_current_texture() {
@@ -283,20 +289,24 @@ impl WGPURenderer {
             }
         };
 
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("CAD Render Encoder"),
         });
 
-        let vertex_data: &[f32] = &self.pending_vertices.iter()
+        let vertex_data: Vec<f32> = self
+            .pending_vertices
+            .iter()
             .flat_map(|v| v.position.iter().chain(v.color.iter()))
             .copied()
-            .collect::<Vec<f32>>();
+            .collect();
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("CAD Vertex Buffer"),
-            contents: bytemuck::cast_slice(vertex_data),
+            contents: bytemuck::cast_slice(&vertex_data),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -345,27 +355,4 @@ impl WGPURenderer {
     pub fn is_available() -> bool {
         true
     }
-}
-
-#[cfg(not(feature = "gpu"))]
-#[derive(Debug)]
-pub struct WGPURenderer;
-
-#[cfg(not(feature = "gpu"))]
-impl WGPURenderer {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub async fn new_canvas(_canvas: &web_sys::HtmlCanvasElement) -> Result<Self, String> {
-        Err("GPU rendering requires 'gpu' feature".to_string())
-    }
-
-    pub fn resize(&mut self, _width: u32, _height: u32) {}
-    pub fn clear(&mut self, _r: f32, _g: f32, _b: f32, _a: f32) {}
-    pub fn draw_line(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _color: &[f32; 4]) {}
-    pub fn draw_circle(&mut self, _cx: f32, _cy: f32, _r: f32, _color: &[f32; 4], _segments: u32) {}
-    pub fn present(&mut self) {}
-    pub fn flush(&mut self) {}
-    pub fn is_available() -> bool { false }
 }

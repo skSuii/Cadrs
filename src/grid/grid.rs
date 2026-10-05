@@ -74,31 +74,6 @@ impl Default for GridSettings {
     }
 }
 
-impl Clone for GridSettings {
-    fn clone(&self) -> Self {
-        Self {
-            grid_on: self.grid_on,
-            grid_snap: self.grid_snap,
-            grid_type: self.grid_type,
-            grid_spacing_x: self.grid_spacing_x,
-            grid_spacing_y: self.grid_spacing_y,
-            grid_spacing_z: self.grid_spacing_z,
-            grid_lines: self.grid_lines,
-            grid_major_lines: self.grid_major_lines,
-            grid_bounds: self.grid_bounds,
-            grid_color: self.grid_color,
-            grid_axis_color: self.grid_axis_color,
-            grid_line_weight: self.grid_line_weight,
-            display_grid_beyond_limits: self.display_grid_beyond_limits,
-            follow_ucs: self.follow_ucs,
-            grid_snap_style: self.grid_snap_style,
-            grid_snap_angle: self.grid_snap_angle,
-            polar_snap_spacing: self.polar_snap_spacing,
-            display_polar_tracking_path: self.display_polar_tracking_path,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GridPoint {
     pub x: f64,

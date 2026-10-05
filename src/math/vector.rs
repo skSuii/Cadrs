@@ -86,6 +86,11 @@ impl Vector2 {
             self.y + (other.y - self.y) * t,
         )
     }
+
+    #[inline]
+    pub fn angle(&self) -> f64 {
+        self.y.atan2(self.x)
+    }
 }
 
 impl Add for Vector2 {

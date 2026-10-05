@@ -173,7 +173,7 @@ impl GeometricTolerance {
         };
         
         if let Some(frame) = self.feature_control_frame.frames.first_mut() {
-            frame.datum_references.push(reference);
+            frame.datum_references.push(reference.clone());
         }
         
         self.feature_control_frame.datum_reference_frame.push(reference.clone());
@@ -332,7 +332,8 @@ impl DatumSystem {
     pub fn build_references(&mut self) {
         self.references.clear();
         
-        if let Some(datum) = &self.primary_datum {
+        {
+            let datum = &self.primary_datum;
             self.references.push(DatumReference {
                 datum: datum.identifier.clone(),
                 modifier: DatumModifier::None,
@@ -360,9 +361,23 @@ impl DatumSystem {
 
 impl From<GeometricTolerance> for crate::data_structure::Entity {
     fn from(tol: GeometricTolerance) -> Self {
+        let content = tol
+            .feature_control_frame
+            .frames
+            .first()
+            .map(|frame| format!("{} {:.3}", frame.symbol, frame.tolerance_value))
+            .unwrap_or_default();
         crate::data_structure::Entity::new(
-            crate::data_structure::EntityType::GeometricTolerance,
-            crate::data_structure::EntityGeometry::GeometricTolerance(tol),
+            crate::data_structure::EntityType::Text,
+            crate::data_structure::EntityGeometry::Text {
+                content,
+                position: crate::geometry::Point::origin(),
+                height: 2.5,
+                rotation: 0.0,
+                width_factor: 1.0,
+                font_name: "Standard".to_string(),
+                style: crate::data_structure::TextStyle::default(),
+            },
         )
     }
 }

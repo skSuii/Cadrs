@@ -58,6 +58,25 @@ pub enum BackendType {
 }
 
 impl BackendType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            BackendType::Software => "Software",
+            BackendType::SVG => "SVG",
+            #[cfg(target_arch = "wasm32")]
+            BackendType::WebGL => "WebGL",
+            #[cfg(target_os = "windows")]
+            BackendType::Direct2D => "Direct2D",
+            #[cfg(target_os = "windows")]
+            BackendType::Direct3D11 => "Direct3D11",
+            #[cfg(target_os = "macos")]
+            BackendType::Metal => "Metal",
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            BackendType::OpenGL => "OpenGL",
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            BackendType::Vulkan => "Vulkan",
+        }
+    }
+
     pub fn from_str(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "software" => Some(BackendType::Software),

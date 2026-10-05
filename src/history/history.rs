@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 use std::fmt;
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ActionType {
     Add,
     Delete,

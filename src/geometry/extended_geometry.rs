@@ -45,6 +45,18 @@ impl Default for Point {
     }
 }
 
+impl From<crate::geometry::point::Point> for Point {
+    fn from(p: crate::geometry::point::Point) -> Self {
+        Self { x: p.x, y: p.y }
+    }
+}
+
+impl From<&crate::geometry::point::Point> for Point {
+    fn from(p: &crate::geometry::point::Point) -> Self {
+        Self { x: p.x, y: p.y }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Line {
     pub start: Point,
@@ -318,6 +330,29 @@ impl Polyline {
         Self { vertices, is_closed }
     }
 
+    pub fn push<P: Into<Point>>(&mut self, point: P) {
+        self.vertices.push(point.into());
+    }
+
+    pub fn close(&mut self) {
+        self.is_closed = true;
+    }
+
+    pub fn from_points<I, P>(points: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<Point>,
+    {
+        Self {
+            vertices: points.into_iter().map(|p| p.into()).collect(),
+            is_closed: false,
+        }
+    }
+
+    pub fn vertices(&self) -> &Vec<Point> {
+        &self.vertices
+    }
+
     pub fn length(&self) -> f64 {
         if self.vertices.len() < 2 {
             return 0.0;
@@ -333,6 +368,15 @@ impl Polyline {
         }
         
         length
+    }
+}
+
+impl Default for Polyline {
+    fn default() -> Self {
+        Self {
+            vertices: Vec::new(),
+            is_closed: false,
+        }
     }
 }
 

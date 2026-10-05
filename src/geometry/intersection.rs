@@ -1,4 +1,10 @@
 use crate::geometry::{Point, Line, Circle, Arc};
+#[cfg(feature = "ellipse")]
+use crate::geometry::Ellipse;
+#[cfg(feature = "polyline")]
+use crate::geometry::Polyline;
+#[cfg(any(feature = "nurbs", feature = "ellipse"))]
+use crate::geometry::NURBS;
 
 #[derive(Debug, Clone)]
 pub struct IntersectionPoint {

@@ -118,13 +118,13 @@ impl DXFExporter {
         output.push_str("  2\n");
         output.push_str("BLOCKS\n");
 
-        for (_, block) in &doc.blocks {
+        for (_, block) in doc.blocks() {
             output.push_str("  0\n");
             output.push_str("BLOCK\n");
             output.push_str("  8\n");
             output.push_str("0\n");
             output.push_str("  2\n");
-            output.push_str(&format!("{}\n", block.name));
+            output.push_str(&format!("{}\n", block.name()));
             output.push_str(" 70\n");
             output.push_str("1\n");
 
@@ -142,7 +142,7 @@ impl DXFExporter {
         output.push_str("  2\n");
         output.push_str("ENTITIES\n");
 
-        for (_, entity) in &doc.entities {
+        for (_, entity) in doc.entities() {
             self.write_entity(entity, output);
         }
 
@@ -152,16 +152,16 @@ impl DXFExporter {
     fn write_entity(&self, entity: &Entity, output: &mut String) {
         match &entity.geometry {
             EntityGeometry::Line(line) => {
-                self.write_line_entity(&line.start, &line.end, &entity.layer_id, output);
+                self.write_line_entity(&line.start, &line.end, &entity.layer_id.to_string(), output);
             }
             EntityGeometry::Circle(circle) => {
-                self.write_circle_entity(&circle.center, circle.radius, &entity.layer_id, output);
+                self.write_circle_entity(&circle.center, circle.radius, &entity.layer_id.to_string(), output);
             }
             EntityGeometry::Arc(arc) => {
-                self.write_arc_entity(arc, &entity.layer_id, output);
+                self.write_arc_entity(arc, &entity.layer_id.to_string(), output);
             }
             EntityGeometry::Polyline(polyline) => {
-                self.write_polyline_entity(polyline, &entity.layer_id, output);
+                self.write_polyline_entity(polyline, &entity.layer_id.to_string(), output);
             }
             _ => {}
         }
@@ -321,7 +321,7 @@ impl SVGExporter {
 
         let mut bbox = self.calculate_bbox(doc);
 
-        for (_, entity) in &doc.entities {
+        for (_, entity) in doc.entities() {
             self.write_entity(entity, &mut writer);
         }
 
@@ -338,7 +338,7 @@ impl SVGExporter {
         let mut max_x = f64::MIN;
         let mut max_y = f64::MIN;
 
-        for (_, entity) in &doc.entities {
+        for (_, entity) in doc.entities() {
             match &entity.geometry {
                 EntityGeometry::Line(line) => {
                     min_x = min_x.min(line.start.x).min(line.end.x);
@@ -462,13 +462,13 @@ impl JSONExporter {
         let mut json = String::new();
 
         json.push_str("{\n");
-        json.push_str(&format!("  \"name\": \"{}\",\n", doc.name));
-        json.push_str(&format!("  \"version\": \"{}\",\n", doc.version));
-        json.push_str(&format!("  \"units\": \"{:?}\",\n", doc.units));
+        json.push_str(&format!("  \"name\": \"{}\",\n", doc.name()));
+        json.push_str(&format!("  \"version\": \"{}\",\n", doc.version()));
+        json.push_str(&format!("  \"units\": \"{:?}\",\n", doc.units()));
         json.push_str("  \"entities\": [\n");
 
-        let entity_count = doc.entities.len();
-        for (i, (_, entity)) in doc.entities.iter().enumerate() {
+        let entity_count = doc.entities().len();
+        for (i, (_, entity)) in doc.entities().iter().enumerate() {
             json.push_str("    {\n");
             json.push_str(&format!("      \"type\": \"{:?}\",\n", entity.entity_type));
             json.push_str(&format!("      \"layer\": \"{}\",\n", entity.layer_id));
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn test_document_export() {
         let mut doc = Document::new("Test".to_string());
-        let line = Line::new(Point::new(0.0, 0.0), Point::new(100.0, 100.0));
+        let line = Line::new(Point::new(0.0, 0.0, 0.0), Point::new(100.0, 100.0, 0.0));
         let entity = Entity::new(EntityType::Line, EntityGeometry::Line(line));
         doc.add_entity(entity);
 

@@ -269,7 +269,7 @@ impl GeometricSolver {
     }
 
     fn evaluate_constraints(&self) -> f64 {
-        let mut max_error = 0.0;
+        let mut max_error: f64 = 0.0;
 
         for constraint in &self.constraints {
             let error = match constraint.constraint_type {
@@ -596,7 +596,7 @@ impl GeometricSolver {
     }
 
     pub fn is_over_constrained(&self) -> bool {
-        self.state.constrained_dof > self.entities.len() * 3
+        (self.state.constrained_dof as usize) > self.entities.len() * 3
     }
 }
 

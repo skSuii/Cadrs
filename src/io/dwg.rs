@@ -871,6 +871,7 @@ impl crate::io::Importer for DWGImporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::Importer;
 
     #[test]
     fn test_dwg_version_detection() {

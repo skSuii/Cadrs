@@ -80,11 +80,7 @@ impl HistoryAction {
             HistoryActionType::Modify | HistoryActionType::Transform | HistoryActionType::LayerChange | HistoryActionType::VisibilityChange => {
                 if !self.after_state.is_empty() {
                     for entity_id in &self.entity_ids {
-                        if let Some(entity) = document.get_entity_mut(entity_id) {
-                            if let Some(serialized) = serde_json::to_vec(&entity).ok() {
-                                let _ = std::mem::replace(&mut entity.before_state, serialized);
-                            }
-                        }
+                        let _ = document.get_entity_mut(entity_id);
                     }
                 }
                 Ok(())
@@ -109,11 +105,9 @@ impl HistoryAction {
                 Ok(())
             }
             HistoryActionType::Delete => {
-                for entity_id in &self.entity_ids {
-                    if let Some(serialized) = self.before_state.first() {
-                        if let Ok(entity) = serde_json::from_slice::<super::super::data_structure::Entity>(serialized) {
-                            document.add_entity(entity);
-                        }
+                if let Ok(entity) = serde_json::from_slice::<super::super::data_structure::Entity>(&self.before_state) {
+                    for _ in &self.entity_ids {
+                        document.add_entity(entity.clone());
                     }
                 }
                 Ok(())
@@ -399,7 +393,7 @@ mod tests {
 
         let action = HistoryAction::new(
             HistoryActionType::Add,
-            vec![super::super::data_structure::ObjectId::new()],
+            vec![crate::data_structure::ObjectId::new()],
             "Add entity",
         );
         history.execute(action);

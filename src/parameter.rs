@@ -141,7 +141,12 @@ impl Parameter {
     }
 
     pub fn get_f64(&self) -> Option<f64> {
-        self.value.to_f64()
+        match &self.value {
+            ParameterValue::Real(r) => Some(*r),
+            ParameterValue::Integer(i) => Some(*i as f64),
+            ParameterValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
+            _ => None,
+        }
     }
 
     pub fn set_f64(&mut self, value: f64) -> bool {
@@ -486,7 +491,7 @@ impl ValidationRule {
             }
             ValidationRuleType::Pattern => {
                 if let ParameterValue::String(s) = value {
-                    regex::Regex::new(&self.message).map(|r| r.is_match(s)).unwrap_or(false)
+                    crate::xdata::wildcard_match(s, &self.message)
                 } else {
                     true
                 }
@@ -644,12 +649,13 @@ impl ParameterManager {
     }
 
     pub fn add(&mut self, parameter: Parameter) {
-        self.parameters.insert(parameter.name.clone(), parameter);
-        self.parameter_order.push(parameter.name.clone());
+        let name = parameter.name.clone();
+        self.parameters.insert(name.clone(), parameter);
+        self.parameter_order.push(name);
     }
 
     pub fn create(&mut self, name: &str) -> &mut Parameter {
-        let parameter = Parameter::with_name(name);
+        let parameter = Parameter::new().with_name(name);
         self.parameters.insert(name.to_string(), parameter);
         self.parameter_order.push(name.to_string());
         self.parameters.get_mut(name).unwrap()
@@ -975,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_parameter_category() {
-        let mut category = ParameterCategory::with_name("Geometry");
+        let mut category = ParameterCategory::new().with_name("Geometry");
         category.add_parameter("Length");
         category.add_parameter("Width");
 
@@ -984,7 +990,7 @@ mod tests {
 
     #[test]
     fn test_parameter_group() {
-        let mut group = ParameterGroup::with_name("Dimensions");
+        let mut group = ParameterGroup::new().with_name("Dimensions");
         group.add_parameter("Length");
         group.add_parameter("Width");
 
@@ -1026,7 +1032,7 @@ mod tests {
     #[test]
     fn test_parameter_manager_remove() {
         let mut manager = ParameterManager::new();
-        manager.add(Parameter::with_name("Length"));
+        manager.add(Parameter::new().with_name("Length"));
         assert_eq!(manager.parameter_count(), 1);
 
         assert!(manager.remove("Length"));
@@ -1036,7 +1042,7 @@ mod tests {
     #[test]
     fn test_parameter_manager_rename() {
         let mut manager = ParameterManager::new();
-        manager.add(Parameter::with_name("Length"));
+        manager.add(Parameter::new().with_name("Length"));
 
         assert!(manager.rename("Length", "Width"));
         assert!(manager.get("Width").is_some());

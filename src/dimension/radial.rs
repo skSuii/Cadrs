@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Vector2, Circle, Arc, Line};
 use crate::data_structure::{Entity, EntityType, EntityGeometry};
+use super::linear::{DimensionGeometry, DimensionStyle, DimensionType};
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
@@ -165,9 +166,11 @@ impl RadialDimension {
 
 impl From<RadialDimension> for Entity {
     fn from(dim: RadialDimension) -> Self {
+        let arrow = dim.arrow;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::RadialDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, arrow, 0.0, true, true),
         )
     }
 }
@@ -244,9 +247,11 @@ impl SmallRadialDimension {
 
 impl From<SmallRadialDimension> for Entity {
     fn from(dim: SmallRadialDimension) -> Self {
+        let text_location = dim.text_location;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::SmallRadialDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, text_location, 0.0, false, true),
         )
     }
 }
@@ -311,9 +316,11 @@ impl DiameterDimension {
 
 impl From<DiameterDimension> for Entity {
     fn from(dim: DiameterDimension) -> Self {
+        let text_location = dim.text_location;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::DiameterDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, text_location, 0.0, false, true),
         )
     }
 }

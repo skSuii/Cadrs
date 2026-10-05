@@ -18,6 +18,11 @@ impl ObjectId {
     }
 
     #[inline]
+    pub fn null() -> Self {
+        Self(Uuid::nil())
+    }
+
+    #[inline]
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }
@@ -32,6 +37,14 @@ impl ObjectId {
 impl Default for ObjectId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::str::FromStr for ObjectId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
     }
 }
 

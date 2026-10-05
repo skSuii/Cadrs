@@ -567,6 +567,7 @@ impl InsertEntity {
 mod tests {
     use super::*;
     use crate::geometry::Point;
+    use crate::data_structure::ObjectId;
 
     #[test]
     fn test_attribute_creation() {

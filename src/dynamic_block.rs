@@ -307,6 +307,7 @@ pub struct BlockAction {
     pub base_point: Option<ConnectionPoint>,
     pub action_direction: f64,
     pub action_value: f64,
+    pub dependent_actions: Vec<String>,
 }
 
 impl Default for BlockAction {
@@ -334,6 +335,7 @@ impl BlockAction {
             base_point: None,
             action_direction: 0.0,
             action_value: 0.0,
+            dependent_actions: Vec::new(),
         }
     }
 
@@ -446,7 +448,7 @@ impl Default for VisibilityState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VisibilitySetting {
     pub name: String,
     pub description: String,
@@ -1115,6 +1117,7 @@ pub struct BlockStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Point;
 
     #[test]
     fn test_parameter_creation() {

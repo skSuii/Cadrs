@@ -118,6 +118,7 @@ pub trait SnapCalculator {
     fn calculate_extension(&self, entity: &super::super::data_structure::Entity, from_point: crate::geometry::Point, extension_distance: f64) -> Option<Snapshot>;
 }
 
+#[derive(Debug, Clone)]
 pub struct Snapshot {
     pub point: crate::geometry::Point,
     pub snap_type: SnapType,
@@ -145,60 +146,59 @@ pub struct SnapCalculatorImpl;
 
 impl SnapCalculator for SnapCalculatorImpl {
     fn calculate_endpoint(&self, entity: &super::super::data_structure::Entity) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Line(line) => {
-                Some(Snapshot::new(line.start.clone(), SnapType::EndPoint, entity.id))
+                Some(Snapshot::new(line.start.clone(), SnapType::EndPoint, entity.id.clone()))
             }
             super::super::data_structure::EntityGeometry::Polyline(polyline) => {
-                if let Some(first) = polyline.vertices.first() {
-                    Some(Snapshot::new(first.point.clone(), SnapType::EndPoint, entity.id))
-                } else {
-                    None
-                }
+                polyline.vertices.first().map(|first| {
+                    Snapshot::new(crate::geometry::Point::new(first.x, first.y, 0.0), SnapType::EndPoint, entity.id.clone())
+                })
             }
             _ => None,
         }
     }
 
     fn calculate_midpoint(&self, entity: &super::super::data_structure::Entity) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Line(line) => {
                 let mid = line.start.midpoint(&line.end);
-                Some(Snapshot::new(mid, SnapType::MidPoint, entity.id))
+                Some(Snapshot::new(mid, SnapType::MidPoint, entity.id.clone()))
             }
             _ => None,
         }
     }
 
     fn calculate_center(&self, entity: &super::super::data_structure::Entity) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Circle(circle) => {
-                Some(Snapshot::new(circle.center.clone(), SnapType::Center, entity.id))
+                Some(Snapshot::new(circle.center.clone(), SnapType::Center, entity.id.clone()))
             }
             super::super::data_structure::EntityGeometry::Arc(arc) => {
-                Some(Snapshot::new(arc.center.clone(), SnapType::Center, entity.id))
+                Some(Snapshot::new(arc.center.clone(), SnapType::Center, entity.id.clone()))
             }
             _ => None,
         }
     }
 
     fn calculate_node(&self, entity: &super::super::data_structure::Entity) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Point(_) => {
-                Some(Snapshot::new(entity.get_position()?, SnapType::Node, entity.id))
+                Some(Snapshot::new(entity.get_position()?, SnapType::Node, entity.id.clone()))
             }
             _ => None,
         }
     }
 
     fn calculate_quadrant(&self, entity: &super::super::data_structure::Entity) -> Vec<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Circle(circle) => {
+                let c = &circle.center;
                 vec![
-                    Snapshot::new(circle.center.clone() + crate::geometry::Vector2::new(circle.radius, 0.0), SnapType::Quadrant, entity.id),
-                    Snapshot::new(circle.center.clone() - crate::geometry::Vector2::new(circle.radius, 0.0), SnapType::Quadrant, entity.id),
-                    Snapshot::new(circle.center.clone() + crate::geometry::Vector2::new(0.0, circle.radius), SnapType::Quadrant, entity.id),
-                    Snapshot::new(circle.center.clone() - crate::geometry::Vector2::new(0.0, circle.radius), SnapType::Quadrant, entity.id),
+                    Snapshot::new(crate::geometry::Point::new(c.x + circle.radius, c.y, c.z), SnapType::Quadrant, entity.id.clone()),
+                    Snapshot::new(crate::geometry::Point::new(c.x - circle.radius, c.y, c.z), SnapType::Quadrant, entity.id.clone()),
+                    Snapshot::new(crate::geometry::Point::new(c.x, c.y + circle.radius, c.z), SnapType::Quadrant, entity.id.clone()),
+                    Snapshot::new(crate::geometry::Point::new(c.x, c.y - circle.radius, c.z), SnapType::Quadrant, entity.id.clone()),
                 ]
             }
             _ => Vec::new(),
@@ -206,56 +206,45 @@ impl SnapCalculator for SnapCalculatorImpl {
     }
 
     fn calculate_intersection(&self, entity1: &super::super::data_structure::Entity, entity2: &super::super::data_structure::Entity) -> Option<Snapshot> {
-        use super::super::geometry::intersection::Intersection;
         use super::super::data_structure::EntityGeometry;
-
-        let point1 = match &entity1.entity_geometry {
-            EntityGeometry::Line(line) => Some(line.start.clone()),
-            EntityGeometry::Circle(circle) => Some(circle.center.clone()),
-            EntityGeometry::Arc(arc) => Some(arc.center.clone()),
-            EntityGeometry::Point(p) => Some(p.clone()),
-            _ => None,
+        use super::super::geometry::intersection::{
+            intersect_line_line, intersect_line_circle, intersect_circle_circle, IntersectionResult,
         };
 
-        let point2 = match &entity2.entity_geometry {
-            EntityGeometry::Line(line) => Some(line.start.clone()),
-            EntityGeometry::Circle(circle) => Some(circle.center.clone()),
-            EntityGeometry::Arc(arc) => Some(arc.center.clone()),
-            EntityGeometry::Point(p) => Some(p.clone()),
-            _ => None,
+        let result = match (&entity1.geometry, &entity2.geometry) {
+            (EntityGeometry::Line(l1), EntityGeometry::Line(l2)) => intersect_line_line(l1.clone(), l2.clone()),
+            (EntityGeometry::Line(l), EntityGeometry::Circle(c)) => intersect_line_circle(l.clone(), c.clone()),
+            (EntityGeometry::Circle(c), EntityGeometry::Line(l)) => intersect_line_circle(l.clone(), c.clone()),
+            (EntityGeometry::Circle(c1), EntityGeometry::Circle(c2)) => intersect_circle_circle(c1.clone(), c2.clone()),
+            _ => IntersectionResult::None,
         };
 
-        if let (Some(p1), Some(p2)) = (point1, point2) {
-            if p1 == p2 {
-                return Some(Snapshot::new(p1, SnapType::Intersection, entity1.id));
+        match result {
+            IntersectionResult::Point(ip) => {
+                Some(Snapshot::new(ip.point, SnapType::Intersection, entity1.id.clone()))
             }
-        }
-
-        let intersections = entity1.entity_geometry.intersect(&entity2.entity_geometry);
-
-        match intersections {
-            Ok(points) => points.first().cloned().map(|p| {
-                Snapshot::new(p, SnapType::Intersection, entity1.id)
+            IntersectionResult::Points(points) => points.first().map(|ip| {
+                Snapshot::new(ip.point.clone(), SnapType::Intersection, entity1.id.clone())
             }),
-            Err(_) => None,
+            _ => None,
         }
     }
 
     fn calculate_perpendicular(&self, entity: &super::super::data_structure::Entity, from_point: crate::geometry::Point) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Line(line) => {
                 let v = line.end.to_vector2() - line.start.to_vector2();
                 let w = from_point.to_vector2() - line.start.to_vector2();
                 let projection_length = (w.x * v.x + w.y * v.y) / (v.x * v.x + v.y * v.y);
                 let projection = line.start.to_vector2() + v * projection_length.clamp(0.0, 1.0);
-                Some(Snapshot::new(crate::geometry::Point::new(projection.x, projection.y, 0.0), SnapType::Perpendicular, entity.id))
+                Some(Snapshot::new(crate::geometry::Point::new(projection.x, projection.y, 0.0), SnapType::Perpendicular, entity.id.clone()))
             }
             _ => None,
         }
     }
 
     fn calculate_tangent(&self, entity: &super::super::data_structure::Entity, from_point: crate::geometry::Point) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Circle(circle) => {
                 let dx = from_point.x - circle.center.x;
                 let dy = from_point.y - circle.center.y;
@@ -271,7 +260,7 @@ impl SnapCalculator for SnapCalculatorImpl {
                         0.0,
                     );
 
-                    Some(Snapshot::new(tangent_point, SnapType::Tangent, entity.id))
+                    Some(Snapshot::new(tangent_point, SnapType::Tangent, entity.id.clone()))
                 } else {
                     None
                 }
@@ -283,15 +272,15 @@ impl SnapCalculator for SnapCalculatorImpl {
     fn calculate_nearest(&self, entity: &super::super::data_structure::Entity, to_point: crate::geometry::Point) -> Option<Snapshot> {
         let position = entity.get_position()?;
         let distance = position.distance_to(&to_point);
-        Some(Snapshot::new(position, SnapType::Nearest, entity.id))
+        Some(Snapshot::new(position, SnapType::Nearest, entity.id.clone()))
     }
 
     fn calculate_extension(&self, entity: &super::super::data_structure::Entity, from_point: crate::geometry::Point, extension_distance: f64) -> Option<Snapshot> {
-        match &entity.entity_geometry {
+        match &entity.geometry {
             super::super::data_structure::EntityGeometry::Line(line) => {
                 let direction = (line.end.to_vector2() - line.start.to_vector2()).normalize();
                 let extension_point = line.end.to_vector2() + direction * extension_distance;
-                Some(Snapshot::new(crate::geometry::Point::new(extension_point.x, extension_point.y, 0.0), SnapType::Extension, entity.id))
+                Some(Snapshot::new(crate::geometry::Point::new(extension_point.x, extension_point.y, 0.0), SnapType::Extension, entity.id.clone()))
             }
             _ => None,
         }
@@ -429,7 +418,7 @@ impl SnapManager {
     }
 
     pub fn snap_point(
-        &self,
+        &mut self,
         cursor_point: crate::geometry::Point,
         entities: &[super::super::data_structure::Entity],
         reference_point: Option<crate::geometry::Point>,

@@ -1,4 +1,4 @@
-use super::geometry::Color;
+use crate::hatch::hatch::Color;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl LayerManager {
     pub fn create_layer(&mut self, name: String) -> &mut Layer {
         let layer = Layer::new(name.clone());
         self.layers.insert(name.clone(), layer);
-        self.active_layer = Some(name);
+        self.active_layer = Some(name.clone());
         self.layers.get_mut(&name).unwrap()
     }
 
@@ -79,9 +79,9 @@ impl LayerManager {
             return false;
         }
         
-        if let Some(layer) = self.layers.remove(old_name) {
-            layer.name = new_name.clone();
-            self.layers.insert(new_name.clone(), layer);
+        if let Some(mut layer) = self.layers.remove(old_name) {
+            layer.name = new_name.to_string();
+            self.layers.insert(new_name.to_string(), layer);
             true
         } else {
             false
@@ -436,7 +436,7 @@ impl LayerGroup {
         self.is_expanded = !self.is_expanded;
     }
 
-    pub fn get_layers(&self, layer_manager: &LayerManager) -> Vec<&Layer> {
+    pub fn get_layers<'a>(&self, layer_manager: &'a LayerManager) -> Vec<&'a Layer> {
         self.layer_names.iter()
             .filter_map(|name| layer_manager.get_layer(name))
             .collect()

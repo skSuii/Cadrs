@@ -1,4 +1,4 @@
-use super::geometry::{Point, Line, Arc, Circle, Polyline};
+use crate::geometry::extended_geometry::Point;
 use std::f64::consts::PI;
 
 #[derive(Debug, Clone)]
@@ -214,24 +214,24 @@ impl HatchPattern {
             let step = hatch_line.spacing * self.scale;
             let rotated_angle = self.angle + hatch_line.angle;
 
-            let num_lines = ((bounding_box.width + bounding_box.height) / step) as usize + 2;
+                let num_lines = ((bounding_box.width() + bounding_box.height()) / step) as usize + 2;
 
-            for i in -1..=num_lines {
-                let offset = i as f64 * step;
-                let pattern_line = PatternLine {
-                    start: Point::new(
-                        bounding_box.min_x - step,
-                        bounding_box.min_y + offset,
-                    ),
-                    end: Point::new(
-                        bounding_box.max_x + step,
-                        bounding_box.min_y + offset,
-                    ),
-                    line_type: hatch_line.line_type.clone(),
-                    line_weight: hatch_line.line_weight,
-                };
-                pattern_lines.push(pattern_line);
-            }
+                for i in -1i64..=(num_lines as i64) {
+                    let offset = i as f64 * step;
+                    let pattern_line = PatternLine {
+                        start: Point::new(
+                            bounding_box.min_x - step,
+                            bounding_box.min_y + offset,
+                        ),
+                        end: Point::new(
+                            bounding_box.max_x + step,
+                            bounding_box.min_y + offset,
+                        ),
+                        line_type: hatch_line.line_type.clone(),
+                        line_weight: hatch_line.line_weight,
+                    };
+                    pattern_lines.push(pattern_line);
+                }
         }
 
         if self.double {
@@ -239,9 +239,9 @@ impl HatchPattern {
                 let step = hatch_line.spacing * self.scale;
                 let rotated_angle = self.angle + hatch_line.angle + PI / 2.0;
 
-                let num_lines = ((bounding_box.width + bounding_box.height) / step) as usize + 2;
+                let num_lines = ((bounding_box.width() + bounding_box.height()) / step) as usize + 2;
 
-                for i in -1..=num_lines {
+                for i in -1i64..=(num_lines as i64) {
                     let offset = i as f64 * step;
                     let pattern_line = PatternLine {
                         start: Point::new(
@@ -329,7 +329,7 @@ impl HatchDot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LineType {
     Solid,
     Dashed,
@@ -402,8 +402,8 @@ impl GradientFill {
     }
 
     pub fn color_at_position(&self, position: Point, bounding_box: BoundingBox) -> Color {
-        let normalized_x = (position.x - bounding_box.min_x) / bounding_box.width;
-        let normalized_y = (position.y - bounding_box.min_y) / bounding_box.height;
+        let normalized_x = (position.x - bounding_box.min_x) / bounding_box.width();
+        let normalized_y = (position.y - bounding_box.min_y) / bounding_box.height();
 
         let gradient_pos = match self.gradient_type {
             GradientType::Linear => {
@@ -485,6 +485,10 @@ impl Color {
 
     pub fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self::new(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)
+    }
+
+    pub fn white() -> Self {
+        Self::new(1.0, 1.0, 1.0)
     }
 
     pub fn hex(hex: &str) -> Self {
@@ -695,38 +699,38 @@ pub struct PatternLibrary;
 impl PatternLibrary {
     pub fn get_pattern(&self, name: &str) -> Option<HatchPattern> {
         match name {
-            "ANSI31" => Some(self.create_ansi31()),
-            "ANSI32" => Some(self.create_ansi32()),
-            "ANSI33" => Some(self.create_ansi33()),
-            "ANSI34" => Some(self.create_ansi34()),
-            "ANSI35" => Some(self.create_ansi35()),
-            "ANSI36" => Some(self.create_ansi36()),
-            "ANSI37" => Some(self.create_ansi37()),
-            "ANSI38" => Some(self.create_ansi38()),
-            "BRICK" => Some(self.create_brick()),
-            "CROSS" => Some(self.create_cross()),
-            "DASH" => Some(self.create_dash()),
-            "DIAGONAL" => Some(self.create_diagonal()),
-            "GRID" => Some(self.create_grid()),
-            "HOUND" => Some(self.create_hound()),
-            "ISO01" => Some(self.create_iso01()),
-            "ISO02" => Some(self.create_iso02()),
-            "ISO03" => Some(self.create_iso03()),
-            "ISO04" => Some(self.create_iso04()),
-            "ISO05" => Some(self.create_iso05()),
-            "ISO06" => Some(self.create_iso06()),
-            "ISO07" => Some(self.create_iso07()),
-            "ISO08" => Some(self.create_iso08()),
-            "ISO09" => Some(self.create_iso09()),
-            "ISO10" => Some(self.create_iso10()),
-            "PLASTIC" => Some(self.create_plastic()),
-            "STEEL" => Some(self.create_steel()),
-            "ZIGZAG" => Some(self.create_zigzag()),
+            "ANSI31" => Some(Self::create_ansi31()),
+            "ANSI32" => Some(Self::create_ansi32()),
+            "ANSI33" => Some(Self::create_ansi33()),
+            "ANSI34" => Some(Self::create_ansi34()),
+            "ANSI35" => Some(Self::create_ansi35()),
+            "ANSI36" => Some(Self::create_ansi36()),
+            "ANSI37" => Some(Self::create_ansi37()),
+            "ANSI38" => Some(Self::create_ansi38()),
+            "BRICK" => Some(Self::create_brick()),
+            "CROSS" => Some(Self::create_cross()),
+            "DASH" => Some(Self::create_dash()),
+            "DIAGONAL" => Some(Self::create_diagonal()),
+            "GRID" => Some(Self::create_grid()),
+            "HOUND" => Some(Self::create_hound()),
+            "ISO01" => Some(Self::create_iso01()),
+            "ISO02" => Some(Self::create_iso02()),
+            "ISO03" => Some(Self::create_iso03()),
+            "ISO04" => Some(Self::create_iso04()),
+            "ISO05" => Some(Self::create_iso05()),
+            "ISO06" => Some(Self::create_iso06()),
+            "ISO07" => Some(Self::create_iso07()),
+            "ISO08" => Some(Self::create_iso08()),
+            "ISO09" => Some(Self::create_iso09()),
+            "ISO10" => Some(Self::create_iso10()),
+            "PLASTIC" => Some(Self::create_plastic()),
+            "STEEL" => Some(Self::create_steel()),
+            "ZIGZAG" => Some(Self::create_zigzag()),
             _ => None,
         }
     }
 
-    fn create_ansi31() -> HatchPattern {
+    pub fn create_ansi31() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI31".to_string(),
             "ANSI Iron, Brick, and Masonry".to_string(),
@@ -735,7 +739,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi32() -> HatchPattern {
+    pub fn create_ansi32() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI32".to_string(),
             "ANSI Steel".to_string(),
@@ -745,7 +749,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi33() -> HatchPattern {
+    pub fn create_ansi33() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI33".to_string(),
             "ANSI Bronze, Brass, Copper".to_string(),
@@ -756,7 +760,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi34() -> HatchPattern {
+    pub fn create_ansi34() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI34".to_string(),
             "ANSI Plastics".to_string(),
@@ -767,7 +771,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi35() -> HatchPattern {
+    pub fn create_ansi35() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI35".to_string(),
             "ANSI Hard ROCK".to_string(),
@@ -778,7 +782,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi36() -> HatchPattern {
+    pub fn create_ansi36() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI36".to_string(),
             "ANSI Earth".to_string(),
@@ -789,7 +793,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi37() -> HatchPattern {
+    pub fn create_ansi37() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI37".to_string(),
             "ANSI Concrete".to_string(),
@@ -800,7 +804,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_ansi38() -> HatchPattern {
+    pub fn create_ansi38() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ANSI38".to_string(),
             "ANSI Lead, Zinc, Magnesium, Aluminum".to_string(),
@@ -811,7 +815,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_brick() -> HatchPattern {
+    pub fn create_brick() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "BRICK".to_string(),
             "Brick pattern".to_string(),
@@ -821,7 +825,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_cross() -> HatchPattern {
+    pub fn create_cross() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "CROSS".to_string(),
             "Crosshatch pattern".to_string(),
@@ -831,7 +835,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_dash() -> HatchPattern {
+    pub fn create_dash() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "DASH".to_string(),
             "Dash pattern".to_string(),
@@ -840,7 +844,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_diagonal() -> HatchPattern {
+    pub fn create_diagonal() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "DIAGONAL".to_string(),
             "Diagonal lines".to_string(),
@@ -849,7 +853,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_grid() -> HatchPattern {
+    pub fn create_grid() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "GRID".to_string(),
             "Grid pattern".to_string(),
@@ -859,7 +863,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_hound() -> HatchPattern {
+    pub fn create_hound() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "HOUND".to_string(),
             "Houndstooth pattern".to_string(),
@@ -869,7 +873,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso01() -> HatchPattern {
+    pub fn create_iso01() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO01".to_string(),
             "ISO Light".to_string(),
@@ -878,7 +882,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso02() -> HatchPattern {
+    pub fn create_iso02() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO02".to_string(),
             "ISO Medium".to_string(),
@@ -887,7 +891,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso03() -> HatchPattern {
+    pub fn create_iso03() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO03".to_string(),
             "ISO Dense".to_string(),
@@ -896,7 +900,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso04() -> HatchPattern {
+    pub fn create_iso04() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO04".to_string(),
             "ISO Light double".to_string(),
@@ -907,7 +911,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso05() -> HatchPattern {
+    pub fn create_iso05() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO05".to_string(),
             "ISO Medium double".to_string(),
@@ -918,7 +922,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso06() -> HatchPattern {
+    pub fn create_iso06() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO06".to_string(),
             "ISO Dense double".to_string(),
@@ -929,7 +933,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso07() -> HatchPattern {
+    pub fn create_iso07() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO07".to_string(),
             "ISO Swirl".to_string(),
@@ -939,7 +943,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso08() -> HatchPattern {
+    pub fn create_iso08() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO08".to_string(),
             "ISO Wave".to_string(),
@@ -949,7 +953,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso09() -> HatchPattern {
+    pub fn create_iso09() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO09".to_string(),
             "ISO Cobblestone".to_string(),
@@ -961,7 +965,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_iso10() -> HatchPattern {
+    pub fn create_iso10() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ISO10".to_string(),
             "ISO Weave".to_string(),
@@ -973,7 +977,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_plastic() -> HatchPattern {
+    pub fn create_plastic() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "PLASTIC".to_string(),
             "Plastic pattern".to_string(),
@@ -984,7 +988,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_steel() -> HatchPattern {
+    pub fn create_steel() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "STEEL".to_string(),
             "Steel pattern".to_string(),
@@ -995,7 +999,7 @@ impl PatternLibrary {
         pattern
     }
 
-    fn create_zigzag() -> HatchPattern {
+    pub fn create_zigzag() -> HatchPattern {
         let mut pattern = HatchPattern::new(
             "ZIGZAG".to_string(),
             "Zigzag pattern".to_string(),

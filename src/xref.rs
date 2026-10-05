@@ -325,7 +325,7 @@ impl XrefPath {
     pub fn from_relative(relative: &str, base: &str) -> Self {
         let relative_path = PathBuf::from(relative);
         let absolute_path = PathBuf::from(base).parent()
-            .unwrap_or(PathBuf::from("."))
+            .unwrap_or_else(|| std::path::Path::new("."))
             .join(&relative_path);
 
         Self {
@@ -451,7 +451,8 @@ impl XrefManager {
         rotation: f64,
         scale: (f64, f64, f64),
     ) -> Result<String, String> {
-        let definition = XrefDefinition::with_name(name)
+        let definition = XrefDefinition::new()
+            .with_name(name)
             .with_path(path)
             .with_scale(scale.0, scale.1, scale.2)
             .with_rotation(rotation);
@@ -464,7 +465,7 @@ impl XrefManager {
     }
 
     pub fn attach_overlay(&mut self, name: &str, path: &str) -> Result<String, String> {
-        let mut definition = XrefDefinition::with_name(name).with_path(path)?;
+        let mut definition = XrefDefinition::new().with_name(name).with_path(path);
         definition.set_overlay(true);
 
         let instance_id = self.create_instance(name, crate::geometry::Point::origin(), 0.0, (1.0, 1.0, 1.0))?;
@@ -540,7 +541,7 @@ impl XrefManager {
             return Err(format!("XREF '{}' not found", name));
         }
 
-        self.detach(name)?;
+        self.detach(name);
 
         match bind_type {
             BindType::Insert => {
@@ -798,10 +799,11 @@ pub struct XrefStatistics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Point;
 
     #[test]
     fn test_xref_definition_creation() {
-        let xref = XrefDefinition::with_name("MyXref")
+        let xref = XrefDefinition::new().with_name("MyXref")
             .with_path("reference.dwg")
             .with_scale(2.0, 2.0, 2.0)
             .with_rotation(45.0);

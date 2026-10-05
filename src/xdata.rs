@@ -165,7 +165,7 @@ impl XDataItem {
             XDataItem::Boolean(_) => 1076,
             XDataItem::Binary(_) => 1004,
             XDataItem::Handle(_) => 1005,
-            XDataItem::Point3D(_) => 1011,
+            XDataItem::Point3D(..) => 1011,
         }
     }
 }
@@ -266,18 +266,44 @@ impl XDataSet {
 
     #[inline]
     pub fn get_or_create(&mut self, app_name: &str) -> &mut XData {
-        if let Some(xdata) = self.get_mut(app_name) {
-            xdata
-        } else {
+        if self.get(app_name).is_none() {
             self.add(XData::new(app_name));
-            self.get_mut(app_name).unwrap()
         }
+        self.get_mut(app_name).unwrap()
     }
 
     #[inline]
     pub fn total_item_count(&self) -> usize {
         self.xdata_list.iter().map(|xd| xd.len()).sum()
     }
+}
+
+/// 简单通配符匹配，支持 `*` 和 `?`，不依赖 regex
+pub(crate) fn wildcard_match(s: &str, pattern: &str) -> bool {
+    let s = s.as_bytes();
+    let p = pattern.as_bytes();
+    let (mut si, mut pi) = (0usize, 0usize);
+    let (mut star, mut ss) = (usize::MAX, 0usize);
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
+            si += 1;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star = pi;
+            ss = si;
+            pi += 1;
+        } else if star != usize::MAX {
+            pi = star + 1;
+            ss += 1;
+            si = ss;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,7 +425,7 @@ impl ValidationRule {
         }
         if let Some(ref pattern) = self.pattern {
             if let CustomValue::String(s) = value {
-                if !s.matches(pattern) {
+                if !wildcard_match(s, pattern) {
                     return false;
                 }
             } else {
@@ -527,8 +553,9 @@ impl ExtendedDataRegistry {
         if schema.app_name.is_empty() || schema.id.is_empty() {
             return false;
         }
+        let app_name = schema.app_name.clone();
         self.schemas.insert(schema.id.clone(), schema);
-        self.app_names.push(schema.app_name.clone());
+        self.app_names.push(app_name);
         true
     }
 

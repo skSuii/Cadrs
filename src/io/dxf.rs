@@ -1,840 +1,515 @@
-use thiserror::Error;
-use crate::io::Error as ImportError;
-use crate::data_structure::{Document, Layer, Entity, ObjectId, Block, EntityType, EntityGeometry, TextStyle, TextAlignment, BlockReference};
-use crate::geometry::{Point, Line, Circle, Arc, Ellipse, Polyline, BSpline};
+//! 最小 DXF (ASCII R12) 导入/导出。
+//! 导出：LINE/CIRCLE/ARC/POLYLINE/POINT/ELLIPSE(分解)/SPLINE(分解)/SOLID(填充) + LAYER 表。
+//! 导入：LINE/CIRCLE/ARC/LWPOLYLINE/POLYLINE/POINT/ELLIPSE/SOLID + 图层（code 8）。
+
 use std::collections::HashMap;
 
-#[derive(Debug, Error)]
-pub enum DXFError {
-    #[error("Failed to parse DXF file: {0}")]
-    ParseError(String),
-    
-    #[error("Invalid DXF version: {0}")]
-    InvalidVersion(String),
-    
-    #[error("Missing required section: {0}")]
-    MissingSection(String),
-    
-    #[error("Invalid entity: {0}")]
-    InvalidEntity(String),
-    
-    #[error("IO error: {0}")]
-    IOError(#[from] std::io::Error),
+use crate::data_structure::{
+    make_arc, make_circle, make_ellipse, make_line, make_point, make_polyline, make_solid,
+    Document, Entity, EntityGeometry, Layer, ObjectId,
+};
+use crate::geometry::{Ellipse, Point};
+use crate::io::{Error as ImportError, Importer};
+use crate::render::tessellation::entity_polylines;
+
+fn num(v: f64) -> String {
+    if v == 0.0 {
+        "0.0".to_string()
+    } else {
+        format!("{v:.6}")
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DXFVersion {
-    R12,
-    R14,
-    R2000,
-    R2004,
-    R2007,
-    R2010,
-    R2013,
-    R2018,
+fn pair(out: &mut String, code: i32, value: &str) {
+    out.push_str(&code.to_string());
+    out.push('\n');
+    out.push_str(value);
+    out.push('\n');
 }
 
-impl DXFVersion {
-    pub fn from_header(header: &str) -> Option<Self> {
-        if header.contains("$ACADVER") {
-            if header.contains("AC1009") {
-                Some(DXFVersion::R12)
-            } else if header.contains("AC1012") {
-                Some(DXFVersion::R14)
-            } else if header.contains("AC1015") {
-                Some(DXFVersion::R2000)
-            } else if header.contains("AC1018") {
-                Some(DXFVersion::R2004)
-            } else if header.contains("AC1021") {
-                Some(DXFVersion::R2007)
-            } else if header.contains("AC1024") {
-                Some(DXFVersion::R2010)
-            } else if header.contains("AC1027") {
-                Some(DXFVersion::R2013)
-            } else if header.contains("AC1032") {
-                Some(DXFVersion::R2018)
-            } else {
-                None
+fn norm_deg(deg: f64) -> f64 {
+    let d = deg % 360.0;
+    if d < 0.0 {
+        d + 360.0
+    } else {
+        d
+    }
+}
+
+/// DXF ACI 颜色 → RGB 近似
+pub fn aci_to_rgb(aci: i64) -> (u8, u8, u8) {
+    match aci {
+        1 => (255, 0, 0),
+        2 => (255, 255, 0),
+        3 => (0, 255, 0),
+        4 => (0, 255, 255),
+        5 => (0, 0, 255),
+        6 => (255, 0, 255),
+        _ => (255, 255, 255),
+    }
+}
+
+/// DXF ACI 颜色索引近似映射
+pub fn rgb_to_aci(color: (u8, u8, u8)) -> i64 {
+    let palette: [(i64, (u8, u8, u8)); 7] = [
+        (1, (255, 0, 0)),
+        (2, (255, 255, 0)),
+        (3, (0, 255, 0)),
+        (4, (0, 255, 255)),
+        (5, (0, 0, 255)),
+        (6, (255, 0, 255)),
+        (7, (255, 255, 255)),
+    ];
+    let mut best = 7;
+    let mut best_d = i64::MAX;
+    for (idx, (r, g, b)) in palette {
+        let d = (r as i64 - color.0 as i64).abs()
+            + (g as i64 - color.1 as i64).abs()
+            + (b as i64 - color.2 as i64).abs();
+        if d < best_d {
+            best_d = d;
+            best = idx;
+        }
+    }
+    best
+}
+
+/// 实体所在图层名（导出用；找不到返回 "0"）
+fn layer_name(doc: &Document, layer_id: &ObjectId) -> String {
+    doc.get_layer(layer_id)
+        .map(|l| l.name().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "0".to_string())
+}
+
+/// 写一个 SOLID（四点；DXF 渲染顺序 1-2-4-3，故 12/13 交换写入）
+fn write_solid(out: &mut String, layer: &str, pts: &[Point; 4], color: (u8, u8, u8)) {
+    pair(out, 0, "SOLID");
+    pair(out, 8, layer);
+    for (code_x, code_y, p) in [(10, 20, pts[0]), (11, 21, pts[1]), (12, 22, pts[3]), (13, 23, pts[2])] {
+        pair(out, code_x, &num(p.x));
+        pair(out, code_y, &num(p.y));
+        pair(out, code_x + 20, "0.0");
+    }
+    pair(out, 62, &rgb_to_aci(color).to_string());
+}
+
+/// 多边形扇形三角化后写为多个 SOLID
+fn write_solid_fan(out: &mut String, layer: &str, pts: &[Point], color: (u8, u8, u8)) {
+    for i in 1..pts.len().saturating_sub(1) {
+        let tri = [pts[0], pts[i], pts[i + 1], pts[i + 1]];
+        write_solid(out, layer, &tri, color);
+    }
+}
+
+/// 导出为 ASCII DXF (R12)
+pub fn export(doc: &Document) -> String {
+    let mut s = String::new();
+    pair(&mut s, 0, "SECTION");
+    pair(&mut s, 2, "HEADER");
+    pair(&mut s, 9, "$ACADVER");
+    pair(&mut s, 1, "AC1009");
+    pair(&mut s, 0, "ENDSEC");
+
+    // TABLES / LAYER 表（负颜色 = 图层关闭）
+    pair(&mut s, 0, "SECTION");
+    pair(&mut s, 2, "TABLES");
+    pair(&mut s, 0, "TABLE");
+    pair(&mut s, 2, "LAYER");
+    pair(&mut s, 70, &doc.layer_count().to_string());
+    for layer in doc.layers().values() {
+        pair(&mut s, 0, "LAYER");
+        pair(&mut s, 2, layer.name());
+        pair(&mut s, 70, "0");
+        let color = layer.color();
+        let aci = rgb_to_aci((color.red, color.green, color.blue));
+        let aci = if layer.is_visible() { aci } else { -aci };
+        pair(&mut s, 62, &aci.to_string());
+        pair(&mut s, 6, "CONTINUOUS");
+    }
+    pair(&mut s, 0, "ENDTAB");
+    pair(&mut s, 0, "ENDSEC");
+
+    pair(&mut s, 0, "SECTION");
+    pair(&mut s, 2, "ENTITIES");
+    for entity in doc.entities().values() {
+        let lname = layer_name(doc, &entity.layer_id);
+        let lname = lname.as_str();
+        match entity.geometry() {
+            EntityGeometry::Line(l) => {
+                pair(&mut s, 0, "LINE");
+                pair(&mut s, 8, lname);
+                pair(&mut s, 10, &num(l.start.x));
+                pair(&mut s, 20, &num(l.start.y));
+                pair(&mut s, 30, "0.0");
+                pair(&mut s, 11, &num(l.end.x));
+                pair(&mut s, 21, &num(l.end.y));
+                pair(&mut s, 31, "0.0");
             }
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DXFWriter;
-
-impl DXFWriter {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn write_header(&self, version: DXFVersion) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("SECTION".to_string());
-        lines.push("  2".to_string());
-        lines.push("HEADER".to_string());
-        
-        lines.push("  9".to_string());
-        lines.push("$ACADVER".to_string());
-        lines.push("  1".to_string());
-        
-        let acad_version = match version {
-            DXFVersion::R12 => "AC1009",
-            DXFVersion::R14 => "AC1012",
-            DXFVersion::R2000 => "AC1015",
-            DXFVersion::R2004 => "AC1018",
-            DXFVersion::R2007 => "AC1021",
-            DXFVersion::R2010 => "AC1024",
-            DXFVersion::R2013 => "AC1027",
-            DXFVersion::R2018 => "AC1032",
-        };
-        lines.push(acad_version.to_string());
-        
-        lines.push("ENDSEC".to_string());
-        
-        lines
-    }
-
-    pub fn write_line(&self, start: (f64, f64, f64), end: (f64, f64, f64), layer: &str) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("  0".to_string());
-        lines.push("LINE".to_string());
-        lines.push("  8".to_string());
-        lines.push(layer.to_string());
-        lines.push(" 10".to_string());
-        lines.push(format!("{:.6}", start.0));
-        lines.push(" 20".to_string());
-        lines.push(format!("{:.6}", start.1));
-        lines.push(" 30".to_string());
-        lines.push(format!("{:.6}", start.2));
-        lines.push(" 11".to_string());
-        lines.push(format!("{:.6}", end.0));
-        lines.push(" 21".to_string());
-        lines.push(format!("{:.6}", end.1));
-        lines.push(" 31".to_string());
-        lines.push(format!("{:.6}", end.2));
-        lines
-    }
-
-    pub fn write_circle(&self, center: (f64, f64, f64), radius: f64, layer: &str) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("  0".to_string());
-        lines.push("CIRCLE".to_string());
-        lines.push("  8".to_string());
-        lines.push(layer.to_string());
-        lines.push(" 10".to_string());
-        lines.push(format!("{:.6}", center.0));
-        lines.push(" 20".to_string());
-        lines.push(format!("{:.6}", center.1));
-        lines.push(" 30".to_string());
-        lines.push(format!("{:.6}", center.2));
-        lines.push(" 40".to_string());
-        lines.push(format!("{:.6}", radius));
-        lines
-    }
-
-    pub fn write_arc(&self, center: (f64, f64, f64), radius: f64, start_angle: f64, end_angle: f64, layer: &str) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("  0".to_string());
-        lines.push("ARC".to_string());
-        lines.push("  8".to_string());
-        lines.push(layer.to_string());
-        lines.push(" 10".to_string());
-        lines.push(format!("{:.6}", center.0));
-        lines.push(" 20".to_string());
-        lines.push(format!("{:.6}", center.1));
-        lines.push(" 30".to_string());
-        lines.push(format!("{:.6}", center.2));
-        lines.push(" 40".to_string());
-        lines.push(format!("{:.6}", radius));
-        lines.push(" 50".to_string());
-        lines.push(format!("{:.6}", start_angle.to_degrees()));
-        lines.push(" 51".to_string());
-        lines.push(format!("{:.6}", end_angle.to_degrees()));
-        lines
-    }
-
-    pub fn write_polyline(&self, vertices: &[(f64, f64, f64)], layer: &str) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("  0".to_string());
-        lines.push("POLYLINE".to_string());
-        lines.push("  8".to_string());
-        lines.push(layer.to_string());
-        lines.push(" 62".to_string());
-        lines.push("1".to_string());
-        
-        for (i, vertex) in vertices.iter().enumerate() {
-            lines.push("  0".to_string());
-            lines.push("VERTEX".to_string());
-            lines.push("  8".to_string());
-            lines.push(layer.to_string());
-            lines.push(" 10".to_string());
-            lines.push(format!("{:.6}", vertex.0));
-            lines.push(" 20".to_string());
-            lines.push(format!("{:.6}", vertex.1));
-            lines.push(" 30".to_string());
-            lines.push(format!("{:.6}", vertex.2));
-            if i == vertices.len() - 1 {
-                lines.push(" 70".to_string());
-                lines.push("1".to_string());
+            EntityGeometry::Circle(c) => {
+                pair(&mut s, 0, "CIRCLE");
+                pair(&mut s, 8, lname);
+                pair(&mut s, 10, &num(c.center.x));
+                pair(&mut s, 20, &num(c.center.y));
+                pair(&mut s, 30, "0.0");
+                pair(&mut s, 40, &num(c.radius));
             }
-        }
-        
-        lines.push("  0".to_string());
-        lines.push("SEQEND".to_string());
-        lines.push("  8".to_string());
-        lines.push(layer.to_string());
-        
-        lines
-    }
-}
-
-struct DXFParser<'a> {
-    lines: Vec<&'a str>,
-    current_index: usize,
-    entities: Vec<Entity>,
-    layers: HashMap<String, ObjectId>,
-    blocks: HashMap<String, Block>,
-    current_block: Option<String>,
-}
-
-impl<'a> DXFParser<'a> {
-    fn new(lines: Vec<&'a str>) -> Self {
-        Self {
-            lines,
-            current_index: 0,
-            entities: Vec::new(),
-            layers: HashMap::new(),
-            blocks: HashMap::new(),
-            current_block: None,
-        }
-    }
-
-    fn next_pair(&mut self) -> Option<(&str, &str)> {
-        if self.current_index + 1 >= self.lines.len() {
-            return None;
-        }
-        let group_code = self.lines[self.current_index].trim();
-        let value = self.lines[self.current_index + 1].trim();
-        self.current_index += 2;
-        Some((group_code, value))
-    }
-
-    fn parse_coordinate(&mut self, x_code: &str, y_code: &str, z_code: &str) -> Point {
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut z = 0.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                x_code => x = value.parse().unwrap_or(0.0),
-                y_code => y = value.parse().unwrap_or(0.0),
-                z_code => z = value.parse().unwrap_or(0.0),
-                _ => {
-                    self.current_index -= 2;
-                    break;
+            EntityGeometry::Arc(a) => {
+                // DXF 圆弧总是逆时针：顺时针弧交换起止角
+                let (start_deg, end_deg) = if a.is_counter_clockwise {
+                    (a.start_angle.to_degrees(), a.end_angle.to_degrees())
+                } else {
+                    (a.end_angle.to_degrees(), a.start_angle.to_degrees())
+                };
+                pair(&mut s, 0, "ARC");
+                pair(&mut s, 8, lname);
+                pair(&mut s, 10, &num(a.center.x));
+                pair(&mut s, 20, &num(a.center.y));
+                pair(&mut s, 30, "0.0");
+                pair(&mut s, 40, &num(a.radius));
+                pair(&mut s, 50, &num(norm_deg(start_deg)));
+                pair(&mut s, 51, &num(norm_deg(end_deg)));
+            }
+            EntityGeometry::Point(p) => {
+                pair(&mut s, 0, "POINT");
+                pair(&mut s, 8, lname);
+                pair(&mut s, 10, &num(p.x));
+                pair(&mut s, 20, &num(p.y));
+                pair(&mut s, 30, "0.0");
+            }
+            EntityGeometry::Polyline(p) => {
+                if p.vertices.len() < 2 {
+                    continue;
+                }
+                pair(&mut s, 0, "POLYLINE");
+                pair(&mut s, 8, lname);
+                pair(&mut s, 66, "1");
+                pair(&mut s, 70, if p.is_closed { "1" } else { "0" });
+                for v in &p.vertices {
+                    pair(&mut s, 0, "VERTEX");
+                    pair(&mut s, 8, lname);
+                    pair(&mut s, 10, &num(v.x));
+                    pair(&mut s, 20, &num(v.y));
+                    pair(&mut s, 30, "0.0");
+                }
+                pair(&mut s, 0, "SEQEND");
+                pair(&mut s, 8, lname);
+            }
+            EntityGeometry::Dimension { .. }
+            | EntityGeometry::Text { .. }
+            | EntityGeometry::Ellipse(_)
+            | EntityGeometry::BSpline(_)
+            | EntityGeometry::NURBS(_) => {
+                // 标注 / 文字 / 椭圆 / 样条：分解为折线笔画，以 POLYLINE 写出（R12 兼容）
+                for (pts, closed) in entity_polylines(entity) {
+                    if pts.len() < 2 {
+                        continue;
+                    }
+                    pair(&mut s, 0, "POLYLINE");
+                    pair(&mut s, 8, lname);
+                    pair(&mut s, 66, "1");
+                    pair(&mut s, 70, if closed { "1" } else { "0" });
+                    for p in &pts {
+                        pair(&mut s, 0, "VERTEX");
+                        pair(&mut s, 8, lname);
+                        pair(&mut s, 10, &num(p.x));
+                        pair(&mut s, 20, &num(p.y));
+                        pair(&mut s, 30, "0.0");
+                    }
+                    pair(&mut s, 0, "SEQEND");
+                    pair(&mut s, 8, lname);
                 }
             }
-        }
-        
-        Point::new(x, y, z)
-    }
-
-    fn parse_layer(&mut self) {
-        let mut layer_name = String::new();
-        let mut color = 7;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                "  2" => layer_name = value.to_string(),
-                " 62" => color = value.parse().unwrap_or(7),
-                _ => {}
+            EntityGeometry::Solid { points, color } => {
+                write_solid(&mut s, lname, points, *color);
             }
-            
-            if layer_name.is_empty() {
+            EntityGeometry::Hatch {
+                solid_fill,
+                fill_color,
+                boundary_paths,
+                ..
+            } if *solid_fill => {
+                // 实心填充：边界扇形三角化为 SOLID
+                for bp in boundary_paths {
+                    if !bp.is_polyline {
+                        continue;
+                    }
+                    let pts: Vec<Point> = bp.edges.iter().map(|e| e.start_point).collect();
+                    if pts.len() >= 3 {
+                        write_solid_fan(&mut s, lname, &pts, *fill_color);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    pair(&mut s, 0, "ENDSEC");
+    pair(&mut s, 0, "EOF");
+    s
+}
+
+struct Pair {
+    code: i32,
+    value: String,
+}
+
+fn parse_pairs(src: &str) -> Vec<Pair> {
+    let mut pairs = Vec::new();
+    let mut lines = src.lines();
+    while let (Some(code), Some(value)) = (lines.next(), lines.next()) {
+        let code: i32 = code.trim().parse().unwrap_or(-999);
+        pairs.push(Pair {
+            code,
+            value: value.trim().to_string(),
+        });
+    }
+    pairs
+}
+
+/// 读取从 start 开始、到下一个 code==0 之前的字段（后出现的值覆盖前面的）
+fn read_fields(pairs: &[Pair], start: usize) -> (HashMap<i32, f64>, HashMap<i32, String>, usize) {
+    let mut map = HashMap::new();
+    let mut strs = HashMap::new();
+    let mut i = start;
+    while i < pairs.len() && pairs[i].code != 0 {
+        if let Ok(v) = pairs[i].value.parse::<f64>() {
+            map.insert(pairs[i].code, v);
+        } else {
+            strs.insert(pairs[i].code, pairs[i].value.clone());
+        }
+        i += 1;
+    }
+    (map, strs, i)
+}
+
+fn f(map: &HashMap<i32, f64>, code: i32) -> f64 {
+    map.get(&code).copied().unwrap_or(0.0)
+}
+
+fn layer_field(strs: &HashMap<i32, String>) -> String {
+    strs.get(&8).cloned().unwrap_or_else(|| "0".to_string())
+}
+
+/// 按图层名查找/创建图层，返回图层 id
+fn resolve_layer(
+    doc: &mut Document,
+    map: &mut HashMap<String, ObjectId>,
+    name: &str,
+) -> ObjectId {
+    if let Some(id) = map.get(name) {
+        return id.clone();
+    }
+    let layer = Layer::new(name.to_string());
+    let id = doc.add_layer(layer);
+    map.insert(name.to_string(), id.clone());
+    id
+}
+
+fn add_to_layer(
+    doc: &mut Document,
+    map: &mut HashMap<String, ObjectId>,
+    name: &str,
+    mut entity: Entity,
+) {
+    let id = resolve_layer(doc, map, name);
+    entity.layer_id = id;
+    doc.add_entity(entity);
+}
+
+fn add_polyline(
+    doc: &mut Document,
+    map: &mut HashMap<String, ObjectId>,
+    name: &str,
+    verts: Vec<(f64, f64)>,
+    closed: bool,
+) {
+    if verts.len() < 2 {
+        return;
+    }
+    let pts: Vec<Point> = verts
+        .iter()
+        .map(|(x, y)| Point::new2d(*x, *y))
+        .collect();
+    add_to_layer(doc, map, name, make_polyline(&pts, closed));
+}
+
+/// 导入 ASCII DXF，返回新文档
+pub fn import(src: &str) -> Result<Document, String> {
+    let pairs = parse_pairs(src);
+    if pairs.is_empty() {
+        return Err("Empty file or not an ASCII DXF".to_string());
+    }
+    let mut doc = Document::new("imported".to_string());
+    // DXF 默认图层 "0" 映射到 ModelSpace
+    let mut layer_ids: HashMap<String, ObjectId> = HashMap::new();
+    layer_ids.insert("0".to_string(), doc.model_space().clone());
+    let n = pairs.len();
+    let mut in_entities = false;
+    let mut i = 0;
+
+    while i < n {
+        let p = &pairs[i];
+        if p.code != 0 {
+            i += 1;
+            continue;
+        }
+        match p.value.as_str() {
+            "SECTION" => {
+                if i + 1 < n && pairs[i + 1].code == 2 {
+                    in_entities = pairs[i + 1].value == "ENTITIES";
+                    i += 2;
+                    continue;
+                }
+            }
+            "ENDSEC" => in_entities = false,
+            "LINE" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let a = Point::new2d(f(&m, 10), f(&m, 20));
+                let b = Point::new2d(f(&m, 11), f(&m, 21));
+                if a.distance_to(&b) > 1e-12 {
+                    add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), make_line(a, b));
+                }
+                i = j;
                 continue;
             }
-            
-            if code == "  0" && value == "ENDSEC" {
-                self.current_index -= 2;
-                break;
+            "CIRCLE" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let c = Point::new2d(f(&m, 10), f(&m, 20));
+                let r = f(&m, 40);
+                if r > 1e-12 {
+                    add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), make_circle(c, r));
+                }
+                i = j;
+                continue;
             }
-            
-            if code == "  0" {
-                self.current_index -= 2;
-                break;
+            "ARC" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let c = Point::new2d(f(&m, 10), f(&m, 20));
+                let r = f(&m, 40);
+                let s = f(&m, 50).to_radians();
+                let e = f(&m, 51).to_radians();
+                if r > 1e-12 {
+                    add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), make_arc(c, r, s, e));
+                }
+                i = j;
+                continue;
             }
-        }
-        
-        if !layer_name.is_empty() {
-            let layer = Layer::new(layer_name.clone());
-            let layer_id = ObjectId::new();
-            self.layers.insert(layer_name, layer_id);
-        }
-    }
-
-    fn parse_line(&mut self, layer: &str) {
-        let start = self.parse_coordinate(" 10", " 20", " 30");
-        let end = self.parse_coordinate(" 11", " 21", " 31");
-        
-        let line = Line::new(start, end);
-        let entity = Entity::new(
-            EntityType::Line,
-            EntityGeometry::Line(line),
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_circle(&mut self, layer: &str) {
-        let center = self.parse_coordinate(" 10", " 20", " 30");
-        let mut radius = 1.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            if code == " 40" {
-                radius = value.parse().unwrap_or(1.0);
-                break;
+            "POINT" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let p = Point::new2d(f(&m, 10), f(&m, 20));
+                add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), make_point(p));
+                i = j;
+                continue;
             }
-        }
-        
-        let circle = Circle::new(center, radius);
-        let entity = Entity::new(
-            EntityType::Circle,
-            EntityGeometry::Circle(circle),
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_arc(&mut self, layer: &str) {
-        let center = self.parse_coordinate(" 10", " 20", " 30");
-        let mut radius = 1.0;
-        let mut start_angle = 0.0;
-        let mut end_angle = 0.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                " 40" => radius = value.parse().unwrap_or(1.0),
-                " 50" => start_angle = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                " 51" => end_angle = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        let arc = Arc::new(center, radius, start_angle, end_angle);
-        let entity = Entity::new(
-            EntityType::Arc,
-            EntityGeometry::Arc(arc),
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_ellipse(&mut self, layer: &str) {
-        let center = self.parse_coordinate(" 10", " 20", " 30");
-        let mut major_axis = Point::new(1.0, 0.0, 0.0);
-        let mut ratio = 0.5;
-        let mut start_param = 0.0;
-        let mut end_param = std::f64::consts::PI * 2.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                " 11" => {
-                    if let (Some(x), Some(y), Some(z)) = (
-                        value.parse().ok(),
-                        self.lines.get(self.current_index).and_then(|s| s.parse().ok()),
-                        self.lines.get(self.current_index + 1).and_then(|s| s.parse().ok())
-                    ) {
-                        major_axis = Point::new(x, y, z);
-                        self.current_index += 2;
-                    }
-                }
-                " 40" => ratio = value.parse().unwrap_or(0.5),
-                " 51" => start_param = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                " 52" => end_param = value.parse::<f64>().unwrap_or(std::f64::consts::PI * 2.0).to_radians(),
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        let major_axis_length = major_axis.distance_to(&Point::origin());
-        let minor_axis_length = major_axis_length * ratio;
-        let rotation = if major_axis.x.abs() > major_axis.y.abs() {
-            (major_axis.y / major_axis.x).atan()
-        } else {
-            std::f64::consts::PI / 2.0 - (major_axis.x / major_axis.y).atan()
-        };
-        let ellipse = Ellipse::new(center, major_axis_length / 2.0, minor_axis_length / 2.0, rotation);
-        let entity = Entity::new(
-            EntityType::Ellipse,
-            EntityGeometry::Ellipse(ellipse),
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_polyline(&mut self, layer: &str) {
-        let mut vertices = Vec::new();
-        
-        while let Some((code, value)) = self.next_pair() {
-            if code == "  0" {
-                if value == "SEQEND" {
-                    break;
-                } else if value == "VERTEX" {
-                    let vertex = self.parse_coordinate(" 10", " 20", " 30");
-                    vertices.push(vertex);
-                }
-            }
-        }
-        
-        let polyline = Polyline::from_points(&vertices);
-        let entity = Entity::new(
-            EntityType::Polyline,
-            EntityGeometry::Polyline(polyline),
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_lwpolyline(&mut self, layer: &str) {
-        let mut vertices = Vec::new();
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut has_vertex = false;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                " 10" => {
-                    x = value.parse().unwrap_or(0.0);
-                    has_vertex = false;
-                }
-                " 20" => {
-                    y = value.parse().unwrap_or(0.0);
-                    vertices.push(Point::new(x, y, 0.0));
-                    has_vertex = true;
-                }
-                "  0" => {
-                    if value == "SEQEND" {
-                        break;
-                    }
-                }
-                _ => {
-                    if !has_vertex && code == "  0" {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        if !vertices.is_empty() {
-            let polyline = Polyline::from_points(&vertices);
-            let entity = Entity::new(
-                EntityType::Polyline,
-                EntityGeometry::Polyline(polyline),
-            );
-            
-            if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-                block.add_entity(entity);
-            } else {
-                self.entities.push(entity);
-            }
-        }
-    }
-
-    fn parse_spline(&mut self) {
-        let mut degree = 3;
-        let mut knots = Vec::new();
-        let mut control_points = Vec::new();
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                " 70" => degree = value.parse().unwrap_or(3),
-                " 40" => knots.push(value.parse().unwrap_or(0.0)),
-                " 10" => {
-                    if let (Some(x), Some(y), Some(z)) = (
-                        value.parse().ok(),
-                        self.lines.get(self.current_index).and_then(|s| s.parse().ok()),
-                        self.lines.get(self.current_index + 1).and_then(|s| s.parse().ok())
-                    ) {
-                        control_points.push(Point::new(x, y, z));
-                        self.current_index += 2;
-                    }
-                }
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        if control_points.len() >= 2 && knots.len() >= control_points.len() + degree + 1 {
-            let spline = BSpline::new(control_points, knots, degree);
-            let entity = Entity::new(
-                EntityType::BSpline,
-                EntityGeometry::BSpline(spline),
-            );
-            
-            if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-                block.add_entity(entity);
-            } else {
-                self.entities.push(entity);
-            }
-        }
-    }
-
-    fn parse_text(&mut self, layer: &str) {
-        let mut content = String::new();
-        let position = self.parse_coordinate(" 10", " 20", " 30");
-        let mut height = 2.5;
-        let mut rotation = 0.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                "  1" => content = value.to_string(),
-                " 40" => height = value.parse().unwrap_or(2.5),
-                " 50" => rotation = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        let entity = Entity::new(
-            EntityType::Text,
-            EntityGeometry::Text {
-                content,
-                position,
-                height,
-                rotation,
-                width_factor: 1.0,
-                font_name: "Standard".to_string(),
-                style: TextStyle {
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    alignment: TextAlignment::Left,
-                },
-            },
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_dimension(&mut self, layer: &str) {
-        let mut dim_type = 0;
-        let mut text = String::new();
-        let mut insertion_point = Point::origin();
-        let mut text_height = 2.5;
-        let mut rotation = 0.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                " 70" => dim_type = value.parse().unwrap_or(0),
-                "  1" => text = value.to_string(),
-                " 15" => {
-                    insertion_point.x = value.parse().unwrap_or(0.0);
-                }
-                " 25" => {
-                    insertion_point.y = value.parse().unwrap_or(0.0);
-                }
-                " 40" => text_height = value.parse().unwrap_or(2.5),
-                " 50" => rotation = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        let entity = Entity::new(
-            EntityType::Dimension,
-            EntityGeometry::Text {
-                content: text,
-                position: insertion_point,
-                height: text_height,
-                rotation,
-                width_factor: 1.0,
-                font_name: "Standard".to_string(),
-                style: TextStyle {
-                    bold: false,
-                    italic: false,
-                    underline: false,
-                    alignment: TextAlignment::Left,
-                },
-            },
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_block_definition(&mut self) {
-        let mut block_name = String::new();
-        let mut base_point = Point::origin();
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                "  2" => block_name = value.to_string(),
-                " 10" => {
-                    if let (Some(x), Some(y), Some(z)) = (
-                        value.parse().ok(),
-                        self.lines.get(self.current_index).and_then(|s| s.parse().ok()),
-                        self.lines.get(self.current_index + 1).and_then(|s| s.parse().ok())
-                    ) {
-                        base_point = Point::new(x, y, z);
-                        self.current_index += 2;
-                    }
-                }
-                "  0" => {
-                    if value == "BLOCK" {
-                        continue;
+            "ELLIPSE" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let c = Point::new2d(f(&m, 10), f(&m, 20));
+                let (mx, my) = (f(&m, 11), f(&m, 21));
+                let ratio = f(&m, 40);
+                let t0 = f(&m, 41);
+                let t1 = f(&m, 42);
+                let a = (mx * mx + my * my).sqrt();
+                let rot = my.atan2(mx);
+                let b = a * ratio;
+                let full = (t0.abs() < 1e-9 && (t1 - std::f64::consts::TAU).abs() < 1e-3)
+                    || (t0.abs() < 1e-9 && t1.abs() < 1e-9);
+                if a > 1e-12 && b > 1e-12 && ratio > 0.0 && ratio <= 1.0 + 1e-9 {
+                    let entity = if full {
+                        make_ellipse(c, a, b, rot)
                     } else {
-                        self.current_index -= 2;
-                        break;
-                    }
+                        // 部分椭圆 → 折线近似（参数为弧度，SDK 参数 0..1 对应整椭圆）
+                        let e = Ellipse::new(c, a, b, rot);
+                        let steps = 64;
+                        let pts: Vec<Point> = (0..=steps)
+                            .map(|k| {
+                                let t = t0 + (t1 - t0) * k as f64 / steps as f64;
+                                e.point_at_parameter(t / std::f64::consts::TAU)
+                            })
+                            .collect();
+                        make_polyline(&pts, false)
+                    };
+                    add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), entity);
                 }
-                _ => {
-                    if code.starts_with("ENDSEC") || (code.starts_with("  0") && value != "ENTITY") {
-                        self.current_index -= 2;
-                        break;
-                    }
+                i = j;
+                continue;
+            }
+            "SOLID" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                // DXF 顶点 1,2,3,4 渲染顺序为 1-2-4-3 → 还原为多边形顺序 1,2,4,3
+                let a = Point::new2d(f(&m, 10), f(&m, 20));
+                let b = Point::new2d(f(&m, 11), f(&m, 21));
+                let c = Point::new2d(f(&m, 13), f(&m, 23));
+                let d = Point::new2d(f(&m, 12), f(&m, 22));
+                let mut pts = vec![a, b, c, d];
+                // 去掉重复尾点（三角形）
+                while pts.len() > 3 && pts[pts.len() - 1].distance_to(&pts[pts.len() - 2]) < 1e-12 {
+                    pts.pop();
                 }
-            }
-        }
-        
-        if !block_name.is_empty() {
-            let mut block = Block::new(block_name.clone());
-            block.set_origin(base_point);
-            self.blocks.insert(block_name.clone(), block);
-            self.current_block = Some(block_name);
-        }
-    }
-
-    fn parse_block_reference(&mut self, layer: &str) {
-        let mut block_name = String::new();
-        let position = self.parse_coordinate(" 10", " 20", " 30");
-        let mut x_scale = 1.0;
-        let mut y_scale = 1.0;
-        let mut z_scale = 1.0;
-        let mut rotation = 0.0;
-        let mut column_count = 1u32;
-        let mut row_count = 1u32;
-        let mut column_spacing = 0.0;
-        let mut row_spacing = 0.0;
-        
-        while let Some((code, value)) = self.next_pair() {
-            match code {
-                "  2" => block_name = value.to_string(),
-                " 50" => rotation = value.parse::<f64>().unwrap_or(0.0).to_radians(),
-                " 44" => x_scale = value.parse().unwrap_or(1.0),
-                " 45" => y_scale = value.parse().unwrap_or(1.0),
-                " 46" => z_scale = value.parse().unwrap_or(1.0),
-                " 70" => column_count = value.parse().unwrap_or(1),
-                " 71" => row_count = value.parse().unwrap_or(1),
-                " 91" => column_spacing = value.parse().unwrap_or(0.0),
-                " 92" => row_spacing = value.parse().unwrap_or(0.0),
-                _ => {
-                    if code.starts_with("  0") || code.starts_with("  8") {
-                        self.current_index -= 2;
-                        break;
-                    }
+                let color = aci_to_rgb(f(&m, 62) as i64);
+                if let Some(entity) = make_solid(&pts, color) {
+                    add_to_layer(&mut doc, &mut layer_ids, &layer_field(&ms), entity);
                 }
+                i = j;
+                continue;
             }
-        }
-        
-        let entity = Entity::new(
-            EntityType::BlockRef,
-            EntityGeometry::BlockRef {
-                block_name: block_name.clone(),
-                position,
-                scale_x: x_scale,
-                scale_y: y_scale,
-                scale_z: z_scale,
-                rotation,
-                column_count,
-                row_count,
-                column_spacing,
-                row_spacing,
-            },
-        );
-        
-        if let Some(ref mut block) = self.current_block.as_mut().and_then(|name| self.blocks.get_mut(name)) {
-            block.add_entity(entity);
-        } else {
-            self.entities.push(entity);
-        }
-    }
-
-    fn parse_insert_entity(&mut self, layer: &str) {
-        self.parse_block_reference(layer);
-    }
-
-    fn parse_hatch(&mut self, layer: &str) {
-        while let Some((code, value)) = self.next_pair() {
-            if code.starts_with("  0") {
-                self.current_index -= 2;
-                break;
-            }
-        }
-    }
-
-    fn parse_section(&mut self) {
-        let mut section_name = String::new();
-        let mut current_layer = "0".to_string();
-        
-        while let Some((code, value)) = self.next_pair() {
-            if code == "  2" {
-                section_name = value.to_string();
-                break;
-            }
-        }
-        
-        match section_name.as_str() {
-            "HEADER" => {
-                while let Some((code, value)) = self.next_pair() {
-                    if code == "ENDSEC" {
-                        break;
-                    }
-                }
-            }
-            "LAYERS" | "LAYER" => {
-                while let Some((code, value)) = self.next_pair() {
-                    if code == "ENDSEC" {
-                        break;
-                    }
-                    if code == "  0" && value == "LAYER" {
-                        self.parse_layer();
-                    }
-                }
-            }
-            "BLOCKS" | "BLOCK" => {
-                while let Some((code, value)) = self.next_pair() {
-                    if code == "ENDSEC" {
-                        break;
-                    }
-                    if code == "  0" && value == "BLOCK" {
-                        self.parse_block_definition();
-                    }
-                }
-                self.current_block = None;
-            }
-            "ENTITIES" | "OBJECTS" => {
-                while let Some((code, value)) = self.next_pair() {
-                    if code == "ENDSEC" {
-                        break;
-                    }
-                    
-                    match value {
-                        "LINE" => self.parse_line(&current_layer),
-                        "CIRCLE" => self.parse_circle(&current_layer),
-                        "ARC" => self.parse_arc(&current_layer),
-                        "ELLIPSE" => self.parse_ellipse(&current_layer),
-                        "LWPOLYLINE" | "POLYLINE" => {
-                            if value == "LWPOLYLINE" {
-                                self.parse_lwpolyline(&current_layer);
-                            } else {
-                                self.parse_polyline(&current_layer);
-                            }
+            "LWPOLYLINE" if in_entities => {
+                let mut verts: Vec<(f64, f64)> = Vec::new();
+                let mut closed = false;
+                let mut cur_x: Option<f64> = None;
+                let mut lname = "0".to_string();
+                let mut j = i + 1;
+                while j < n && pairs[j].code != 0 {
+                    let pj = &pairs[j];
+                    match pj.code {
+                        8 => lname = pj.value.clone(),
+                        70 => {
+                            closed = pj.value.parse::<f64>().map(|v| v as i64 & 1 != 0).unwrap_or(false);
                         }
-                        "SPLINE" => self.parse_spline(),
-                        "TEXT" | "MTEXT" => self.parse_text(&current_layer),
-                        "DIMENSION" => self.parse_dimension(&current_layer),
-                        "INSERT" => self.parse_insert_entity(&current_layer),
-                        "HATCH" => self.parse_hatch(&current_layer),
-                        _ => {
-                            if code.starts_with("ENDSEC") {
-                                break;
+                        10 => cur_x = pj.value.parse::<f64>().ok(),
+                        20 => {
+                            if let Some(x) = cur_x {
+                                if let Ok(y) = pj.value.parse::<f64>() {
+                                    verts.push((x, y));
+                                }
                             }
+                            cur_x = None;
                         }
+                        _ => {}
                     }
+                    j += 1;
                 }
+                add_polyline(&mut doc, &mut layer_ids, &lname, verts, closed);
+                i = j;
+                continue;
             }
-            _ => {
-                while let Some((code, _)) = self.next_pair() {
-                    if code == "ENDSEC" {
-                        break;
-                    }
+            "POLYLINE" if in_entities => {
+                let (m, ms, j) = read_fields(&pairs, i + 1);
+                let closed = (f(&m, 70) as i64) & 1 != 0;
+                let lname = layer_field(&ms);
+                let mut verts: Vec<(f64, f64)> = Vec::new();
+                let mut k = j;
+                while k < n && pairs[k].code == 0 && pairs[k].value == "VERTEX" {
+                    let (vf, _vs, nk) = read_fields(&pairs, k + 1);
+                    verts.push((f(&vf, 10), f(&vf, 20)));
+                    k = nk;
                 }
+                add_polyline(&mut doc, &mut layer_ids, &lname, verts, closed);
+                i = k;
+                continue;
             }
+            _ => {}
         }
+        i += 1;
     }
 
-    fn parse(&mut self) {
-        let mut current_layer = "0".to_string();
-        
-        while let Some((code, value)) = self.next_pair() {
-            if code == "SECTION" {
-                self.parse_section();
-            }
-        }
+    if doc.entity_count() == 0 {
+        return Err("No recognizable entities found (LINE/CIRCLE/ARC/POLYLINE)".to_string());
     }
-
-    fn get_document(self) -> Document {
-        let mut doc = Document::new("Imported from DXF".to_string());
-        
-        for (name, layer_id) in self.layers {
-            let mut layer = Layer::new(name.clone());
-            doc.add_layer(layer);
-        }
-        
-        for (_, block) in self.blocks {
-            doc.add_block(block);
-        }
-        
-        for entity in self.entities {
-            doc.add_entity(entity);
-        }
-        
-        doc
-    }
+    Ok(doc)
 }
 
+/// ASCII DXF (R12) 导入器
+#[derive(Debug, Clone, Copy)]
 pub struct DXFImporter;
 
 impl DXFImporter {
@@ -843,7 +518,13 @@ impl DXFImporter {
     }
 }
 
-impl crate::io::Importer for DXFImporter {
+impl Default for DXFImporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Importer for DXFImporter {
     fn can_import(&self, extension: &str) -> bool {
         extension.to_lowercase() == "dxf"
     }
@@ -858,40 +539,15 @@ impl crate::io::Importer for DXFImporter {
         if !self.can_import(extension) {
             return Err(ImportError::UnsupportedFormat(extension.to_string()));
         }
-
         let content = String::from_utf8_lossy(data);
-        let lines: Vec<&str> = content.lines().collect();
-        
-        let mut parser = DXFParser::new(lines);
-        parser.parse();
-        
-        Ok(parser.get_document())
+        import(&content).map_err(ImportError::ParseError)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_dxf_version_parsing() {
-        let header = "$ACADVER\n  1\nAC1015";
-        let version = DXFVersion::from_header(header);
-        assert_eq!(version, Some(DXFVersion::R2000));
-    }
-
-    #[test]
-    fn test_dxf_line_write() {
-        let writer = DXFWriter::new();
-        let lines = writer.write_line(
-            (0.0, 0.0, 0.0),
-            (1.0, 1.0, 0.0),
-            "Layer1",
-        );
-        
-        assert!(lines.contains(&"LINE".to_string()));
-        assert!(lines.contains(&"Layer1".to_string()));
-    }
+    use crate::io::Importer;
 
     #[test]
     fn test_dxf_importer_can_import() {
@@ -899,5 +555,25 @@ mod tests {
         assert!(importer.can_import("dxf"));
         assert!(importer.can_import("DXF"));
         assert!(!importer.can_import("svg"));
+    }
+
+    #[test]
+    fn test_dxf_export_import_roundtrip() {
+        let mut doc = Document::new("test".to_string());
+        doc.add_entity(make_line(Point::new2d(0.0, 0.0), Point::new2d(10.0, 0.0)));
+        doc.add_entity(make_circle(Point::new2d(5.0, 5.0), 2.0));
+
+        let text = export(&doc);
+        assert!(text.contains("LINE"));
+        assert!(text.contains("CIRCLE"));
+        assert!(text.contains("AC1009"));
+
+        let imported = import(&text).unwrap();
+        assert_eq!(imported.entity_count(), 2);
+    }
+
+    #[test]
+    fn test_dxf_import_rejects_empty() {
+        assert!(import("").is_err());
     }
 }

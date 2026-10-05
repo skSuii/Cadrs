@@ -1,5 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::fmt;
+use super::snap_point::SnapCalculator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum OsnapMode {
@@ -69,21 +70,6 @@ impl Default for OsnapSettings {
             tooltip_color: (255, 255, 0),
             aperture_box_size: 30.0,
             is_running: false,
-        }
-    }
-}
-
-impl Clone for OsnapSettings {
-    fn clone(&self) -> Self {
-        Self {
-            display_osnap_marker: self.display_osnap_marker,
-            display_osnap_tooltip: self.display_osnap_tooltip,
-            display_osnap_cursor_tip: self.display_osnap_cursor_tip,
-            marker_color: self.marker_color,
-            marker_size: self.marker_size,
-            tooltip_color: self.tooltip_color,
-            aperture_box_size: self.aperture_box_size,
-            is_running: self.is_running,
         }
     }
 }

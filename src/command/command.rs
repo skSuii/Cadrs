@@ -1,6 +1,10 @@
 use std::fmt;
 
-pub trait Command {
+pub trait CommandClone {
+    fn clone_command(&self) -> Box<dyn Command>;
+}
+
+pub trait Command: CommandClone {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn execute(&self, context: &mut CommandContext) -> CommandResult;
@@ -9,6 +13,9 @@ pub trait Command {
     fn requires_selection(&self) -> bool;
     fn get_required_entity_types(&self) -> &[&'static str];
     fn is_undoable(&self) -> bool;
+    fn receive_input(&mut self, _input: &str) -> CommandResult {
+        CommandResult::Failed("命令不接受交互输入".to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,24 +58,24 @@ impl fmt::Display for CommandResult {
     }
 }
 
-pub struct CommandContext {
-    pub document: *mut super::super::data_structure::Document,
+pub struct CommandContext<'a> {
+    pub document: Option<&'a mut super::super::data_structure::Document>,
     pub active_layer: String,
     pub current_ucs: crate::math::Matrix4,
-    pub selection_set: super::selection::SelectionSet,
+    pub selection_set: crate::selection::SelectionSet,
     pub active_block: String,
-    pub viewport: Option<super::render::viewport::Viewport>,
+    pub viewport: Option<crate::render::viewport::Viewport>,
     pub current_point: Option<crate::geometry::Point>,
     pub user_data: std::collections::HashMap<String, Box<dyn std::any::Any>>,
 }
 
-impl Default for CommandContext {
+impl<'a> Default for CommandContext<'a> {
     fn default() -> Self {
         Self {
-            document: std::ptr::null_mut(),
+            document: None,
             active_layer: "0".to_string(),
             current_ucs: crate::math::Matrix4::identity(),
-            selection_set: super::selection::SelectionSet::new(),
+            selection_set: crate::selection::SelectionSet::new(),
             active_block: "ModelSpace".to_string(),
             viewport: None,
             current_point: None,
@@ -77,14 +84,14 @@ impl Default for CommandContext {
     }
 }
 
-impl CommandContext {
-    pub fn new(document: &mut super::super::data_structure::Document) -> Self {
+impl<'a> CommandContext<'a> {
+    pub fn new(document: &'a mut super::super::data_structure::Document) -> Self {
         Self {
-            document: document as *mut _ as *mut _,
-            active_layer: document.active_layer.clone(),
+            document: Some(document),
+            active_layer: "0".to_string(),
             current_ucs: crate::math::Matrix4::identity(),
-            selection_set: super::selection::SelectionSet::new(),
-            active_block: document.active_block.clone(),
+            selection_set: crate::selection::SelectionSet::new(),
+            active_block: "ModelSpace".to_string(),
             viewport: None,
             current_point: None,
             user_data: std::collections::HashMap::new(),
@@ -92,19 +99,11 @@ impl CommandContext {
     }
 
     pub fn get_document(&self) -> Option<&super::super::data_structure::Document> {
-        if self.document.is_null() {
-            None
-        } else {
-            unsafe { Some(&*self.document) }
-        }
+        self.document.as_deref()
     }
 
     pub fn get_document_mut(&mut self) -> Option<&mut super::super::data_structure::Document> {
-        if self.document.is_null() {
-            None
-        } else {
-            unsafe { Some(&mut *self.document) }
-        }
+        self.document.as_deref_mut()
     }
 
     pub fn set_user_data<T: 'static>(&mut self, key: impl Into<String>, value: T) {
@@ -235,6 +234,7 @@ impl CommandBuilder {
     }
 }
 
+#[derive(Clone)]
 struct EntityCommand {
     name: String,
     description: String,
@@ -244,6 +244,10 @@ impl EntityCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for EntityCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for EntityCommand {
@@ -257,6 +261,7 @@ impl Command for EntityCommand {
     fn is_undoable(&self) -> bool { true }
 }
 
+#[derive(Clone)]
 struct DrawingAidCommand {
     name: String,
     description: String,
@@ -266,6 +271,10 @@ impl DrawingAidCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for DrawingAidCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for DrawingAidCommand {
@@ -279,6 +288,7 @@ impl Command for DrawingAidCommand {
     fn is_undoable(&self) -> bool { false }
 }
 
+#[derive(Clone)]
 struct DisplayControlCommand {
     name: String,
     description: String,
@@ -288,6 +298,10 @@ impl DisplayControlCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for DisplayControlCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for DisplayControlCommand {
@@ -301,6 +315,7 @@ impl Command for DisplayControlCommand {
     fn is_undoable(&self) -> bool { false }
 }
 
+#[derive(Clone)]
 struct FileOperationCommand {
     name: String,
     description: String,
@@ -310,6 +325,10 @@ impl FileOperationCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for FileOperationCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for FileOperationCommand {
@@ -323,6 +342,7 @@ impl Command for FileOperationCommand {
     fn is_undoable(&self) -> bool { false }
 }
 
+#[derive(Clone)]
 struct LayerControlCommand {
     name: String,
     description: String,
@@ -332,6 +352,10 @@ impl LayerControlCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for LayerControlCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for LayerControlCommand {
@@ -345,6 +369,7 @@ impl Command for LayerControlCommand {
     fn is_undoable(&self) -> bool { true }
 }
 
+#[derive(Clone)]
 struct BlockOperationCommand {
     name: String,
     description: String,
@@ -354,6 +379,10 @@ impl BlockOperationCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for BlockOperationCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for BlockOperationCommand {
@@ -367,6 +396,7 @@ impl Command for BlockOperationCommand {
     fn is_undoable(&self) -> bool { true }
 }
 
+#[derive(Clone)]
 struct DimensionCommand {
     name: String,
     description: String,
@@ -376,6 +406,10 @@ impl DimensionCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for DimensionCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for DimensionCommand {
@@ -389,6 +423,7 @@ impl Command for DimensionCommand {
     fn is_undoable(&self) -> bool { true }
 }
 
+#[derive(Clone)]
 struct TextCommand {
     name: String,
     description: String,
@@ -398,6 +433,10 @@ impl TextCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for TextCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for TextCommand {
@@ -411,6 +450,7 @@ impl Command for TextCommand {
     fn is_undoable(&self) -> bool { true }
 }
 
+#[derive(Clone)]
 struct SelectionCommand {
     name: String,
     description: String,
@@ -420,6 +460,10 @@ impl SelectionCommand {
     fn new(name: String, description: String) -> Self {
         Self { name, description }
     }
+}
+
+impl CommandClone for SelectionCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
 }
 
 impl Command for SelectionCommand {
@@ -433,11 +477,12 @@ impl Command for SelectionCommand {
     fn is_undoable(&self) -> bool { false }
 }
 
+#[derive(Clone)]
 pub struct GenericCommand {
     name: String,
     description: String,
-    execute_fn: Box<dyn Fn(&mut CommandContext) -> CommandResult + Send + Sync>,
-    undo_fn: Box<dyn Fn(&mut CommandContext) -> CommandResult + Send + Sync>,
+    execute_fn: std::sync::Arc<dyn Fn(&mut CommandContext) -> CommandResult + Send + Sync>,
+    undo_fn: std::sync::Arc<dyn Fn(&mut CommandContext) -> CommandResult + Send + Sync>,
     requires_selection: bool,
     required_entity_types: Vec<&'static str>,
 }
@@ -452,8 +497,8 @@ impl GenericCommand {
         Self {
             name: name.into(),
             description: description.into(),
-            execute_fn: Box::new(execute_fn),
-            undo_fn: Box::new(undo_fn),
+            execute_fn: std::sync::Arc::new(execute_fn),
+            undo_fn: std::sync::Arc::new(undo_fn),
             requires_selection: false,
             required_entity_types: Vec::new(),
         }
@@ -466,7 +511,12 @@ impl GenericCommand {
     }
 }
 
+impl CommandClone for GenericCommand {
+    fn clone_command(&self) -> Box<dyn Command> { Box::new(self.clone()) }
+}
+
 impl Command for GenericCommand {
+
     fn name(&self) -> &str {
         &self.name
     }

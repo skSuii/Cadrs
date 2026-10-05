@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Vector2, Line, Arc, Polyline};
 use crate::data_structure::{Entity, EntityType, EntityGeometry, TextStyle};
+use crate::geometric_tolerance::GeometricTolerance;
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
@@ -122,7 +123,7 @@ pub enum AnnotationAttachment {
     BottomRight,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnnotationContent {
     Text(String),
     MText(String),
@@ -232,9 +233,30 @@ impl Leader {
     }
     
     pub fn to_entity(&self) -> Entity {
+        let text = match &self.content {
+            LeaderContent::Text(text_content) => text_content.text.clone(),
+            LeaderContent::Block(block_content) => block_content.block_name.clone(),
+            LeaderContent::Tolerance(_) => "Tolerance".to_string(),
+            LeaderContent::None => String::new(),
+        };
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Leader(self.clone()),
+            EntityGeometry::Dimension {
+                dim_type: crate::data_structure::DimensionType::Linear,
+                measurement: 0.0,
+                text,
+                text_position: self.landing.landing_point,
+                text_height: self.style.text_height,
+                text_rotation: 0.0,
+                definition_point: self.start_point,
+                def_point_1: self.landing.landing_point,
+                def_point_2: Point::origin(),
+                def_point_3: Point::origin(),
+                def_point_4: Point::origin(),
+                angle: 0.0,
+                extension_lines: false,
+                center_marks: false,
+            },
         )
     }
 }
@@ -305,10 +327,9 @@ impl MultiLeader {
         
         match self.landing_alignment {
             LandingAlignment::AlignFirst => {
-                if let Some(first_landing) = self.leaders[0].landing.landing_point {
-                    for leader in &mut self.leaders[1..] {
-                        leader.landing.landing_point = first_landing;
-                    }
+                let first_landing = self.leaders[0].landing.landing_point;
+                for leader in &mut self.leaders[1..] {
+                    leader.landing.landing_point = first_landing;
                 }
             }
             LandingAlignment::Distribute => {

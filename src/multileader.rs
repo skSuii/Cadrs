@@ -145,7 +145,7 @@ impl Arrowhead {
         Self {
             position: crate::geometry::Point::origin(),
             size: 2.5,
-            arrowhead_type: ArrowheadType::ClosedFilled,
+            arrowhead_type: ArrowheadType::ArrowClosedFilled,
             angle: 0.0,
         }
     }
@@ -358,7 +358,7 @@ impl MultileaderContent {
 
     #[inline]
     pub fn block(block_name: &str) -> Self {
-        MultileaderContent::Block(BlockContent::with_block(block_name))
+        MultileaderContent::Block(BlockContent::new().with_block(block_name))
     }
 
     #[inline]
@@ -754,8 +754,8 @@ impl MultileaderManager {
 
     #[inline]
     pub fn add(&mut self, multileader: Multileader) -> super::data_structure::ObjectId {
-        let object_id = multileader.object_id;
-        self.multileaders.insert(object_id, multileader);
+        let object_id = multileader.object_id.clone();
+        self.multileaders.insert(object_id.clone(), multileader);
         object_id
     }
 
@@ -837,7 +837,8 @@ impl MultileaderManager {
 
     #[inline]
     pub fn active_mut(&mut self) -> Option<&mut Multileader> {
-        self.active_multileader.as_ref().and_then(|id| self.get_mut(id))
+        let id = self.active_multileader.clone()?;
+        self.get_mut(&id)
     }
 
     #[inline]
@@ -883,6 +884,7 @@ impl MultileaderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Point;
 
     #[test]
     fn test_leader_line() {
@@ -934,10 +936,10 @@ mod tests {
 
     #[test]
     fn test_multileader_builder() {
-        let mut builder = MultileaderBuilder::new();
-        builder.text("Test Label");
-        builder.set_dogleg_length(10.0);
-        builder.set_branch_angle(90.0_f64.to_radians());
+        let builder = MultileaderBuilder::new()
+            .text("Test Label")
+            .set_dogleg_length(10.0)
+            .set_branch_angle(90.0_f64.to_radians());
 
         let mleader = builder.build();
         assert_eq!(mleader.get_text(), Some("Test Label"));
@@ -994,7 +996,7 @@ mod tests {
     fn test_multileader_style_management() {
         let mut manager = MultileaderManager::new();
         let mut style = MultileaderStyle::new("Custom");
-        style.description = "Custom multileader style";
+        style.description = "Custom multileader style".to_string();
         assert!(manager.add_style(style));
         assert!(manager.get_style("Custom").is_some());
 

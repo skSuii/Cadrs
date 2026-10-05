@@ -156,6 +156,26 @@ impl Arc {
         let dy = point.y - center.y;
         dy.atan2(dx)
     }
+
+    #[inline]
+    pub fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    #[inline]
+    pub fn center(&self) -> Point {
+        self.center
+    }
+
+    #[inline]
+    pub fn start_angle(&self) -> f64 {
+        self.start_angle
+    }
+
+    #[inline]
+    pub fn end_angle(&self) -> f64 {
+        self.end_angle
+    }
 }
 
 impl From<Circle> for Arc {

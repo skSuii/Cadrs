@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Vector2, Arc, Line};
 use crate::data_structure::{Entity, EntityType, EntityGeometry};
+use super::linear::{DimensionGeometry, DimensionStyle, DimensionType};
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
@@ -218,9 +219,12 @@ impl AngularDimension {
 
 impl From<AngularDimension> for Entity {
     fn from(dim: AngularDimension) -> Self {
+        let text_location = dim.text_location;
+        let angle = dim.end_angle - dim.start_angle;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::AngularDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, text_location, angle, true, false),
         )
     }
 }
@@ -300,9 +304,12 @@ impl ArcLengthDimension {
 
 impl From<ArcLengthDimension> for Entity {
     fn from(dim: ArcLengthDimension) -> Self {
+        let text_location = dim.text_location;
+        let angle = dim.arc.end_angle - dim.arc.start_angle;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::ArcLengthDimension(dim),
+            super::linear::entity_geometry_from_dimension(&geometry, text_location, angle, true, false),
         )
     }
 }

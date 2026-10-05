@@ -1,5 +1,7 @@
 use std::fmt;
 
+use super::command::CommandClone;
+
 pub struct CommandRegistry {
     commands: std::collections::HashMap<String, Box<dyn super::Command>>,
     aliases: std::collections::HashMap<String, String>,
@@ -59,15 +61,16 @@ impl CommandRegistry {
         }
     }
 
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut dyn super::Command> {
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut (dyn super::Command + '_)> {
         let name = name.to_lowercase();
-        if let Some(cmd) = self.commands.get_mut(&name) {
-            Some(cmd.as_mut())
-        } else if let Some(real_name) = self.aliases.get(&name) {
-            let real_name = real_name.clone();
-            self.commands.get_mut(&real_name).map(|c| c.as_mut())
+        let key = if self.commands.contains_key(&name) {
+            name
         } else {
-            None
+            self.aliases.get(&name)?.clone()
+        };
+        match self.commands.get_mut(&key) {
+            Some(cmd) => Some(cmd.as_mut()),
+            None => None,
         }
     }
 
@@ -110,7 +113,7 @@ impl fmt::Display for CommandRegistry {
 pub struct CommandManager {
     registry: CommandRegistry,
     current_command: Option<Box<dyn super::Command>>,
-    context: super::CommandContext,
+    context: super::CommandContext<'static>,
     command_stack: Vec<Box<dyn super::Command>>,
     is_recording_macro: bool,
     macro_commands: Vec<Box<dyn super::Command>>,
@@ -236,13 +239,9 @@ impl CommandManager {
     }
 }
 
-pub trait CommandClone {
-    fn clone_command(&self) -> Box<dyn super::Command>;
-}
-
-impl<T: super::Command + Clone + 'static> CommandClone for T {
+impl super::CommandClone for Box<dyn super::Command> {
     fn clone_command(&self) -> Box<dyn super::Command> {
-        Box::new(self.clone())
+        (**self).clone_command()
     }
 }
 
@@ -306,6 +305,10 @@ mod tests {
         let mut registry = CommandRegistry::new();
 
         struct TestCommand;
+        impl super::super::CommandClone for TestCommand {
+            fn clone_command(&self) -> Box<dyn super::super::Command> { Box::new(TestCommand) }
+        }
+
         impl super::super::Command for TestCommand {
             fn name(&self) -> &str { "test" }
             fn description(&self) -> &str { "Test command" }
@@ -335,6 +338,10 @@ mod tests {
         let mut registry = CommandRegistry::new();
 
         struct TestCommand;
+        impl super::super::CommandClone for TestCommand {
+            fn clone_command(&self) -> Box<dyn super::super::Command> { Box::new(TestCommand) }
+        }
+
         impl super::super::Command for TestCommand {
             fn name(&self) -> &str { "test" }
             fn description(&self) -> &str { "Test command" }

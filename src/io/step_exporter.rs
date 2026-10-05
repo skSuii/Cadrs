@@ -80,8 +80,8 @@ impl STEPExporter {
 
     fn write_line(&mut self, line: &Line) -> String {
         let id = self.generate_entity_id();
-        let p1_id = self.write_point(line.start_point());
-        let p2_id = self.write_point(line.end_point());
+        let p1_id = self.write_point(&line.start_point());
+        let p2_id = self.write_point(&line.end_point());
         format!("{} = LINE('Line',{},{});\n", id, p1_id, p2_id)
     }
 
@@ -89,7 +89,7 @@ impl STEPExporter {
         let id = self.generate_entity_id();
         let center = arc.center();
         let placement = self.write_axis_placement_3d(
-            center,
+            &center,
             &(Point::new(0.0, 0.0, 1.0), Point::new(1.0, 0.0, 0.0))
         );
         let radius = arc.radius();
@@ -100,7 +100,7 @@ impl STEPExporter {
         let id = self.generate_entity_id();
         let center = arc.center();
         let placement = self.write_axis_placement_3d(
-            center,
+            &center,
             &(Point::new(0.0, 0.0, 1.0), Point::new(1.0, 0.0, 0.0))
         );
         format!("{} = CIRCLE('Arc',{},{});\n", id, placement, arc.radius())
@@ -110,7 +110,7 @@ impl STEPExporter {
         let id = self.generate_entity_id();
         let center = ellipse.center();
         let placement = self.write_axis_placement_3d(
-            center,
+            &center,
             &(Point::new(0.0, 0.0, 1.0), Point::new(1.0, 0.0, 0.0))
         );
         format!("{} = ELLIPSE('Ellipse',{},{},{});\n",
@@ -142,10 +142,9 @@ impl STEPExporter {
 
     fn write_nurbs_surface(&mut self, nurbs: &NURBS) -> String {
         let id = self.generate_entity_id();
-        let degree_u = nurbs.degree_u();
-        let degree_v = nurbs.degree_v();
+        let degree = nurbs.degree();
         format!("{} = NURBS_SURFACE('NURBS',{},{},(,),.UNSPECIFIED.);\n",
-            id, degree_u)
+            id, degree, degree)
     }
 
     fn write_polyline(&mut self, polyline: &Polyline) -> String {
@@ -158,7 +157,10 @@ impl STEPExporter {
 
         let mut segments = Vec::new();
         for i in 0..vertices.len() - 1 {
-            let line = Line::new(vertices[i], vertices[i + 1]);
+            let line = Line::new(
+                Point::new(vertices[i].x, vertices[i].y, 0.0),
+                Point::new(vertices[i + 1].x, vertices[i + 1].y, 0.0),
+            );
             segments.push(self.write_line(&line));
         }
 
@@ -170,7 +172,7 @@ impl STEPExporter {
             EntityGeometry::Point(p) => Some(self.write_point(p)),
             EntityGeometry::Line(l) => Some(self.write_line(l)),
             EntityGeometry::Circle(c) => {
-                let arc = Arc::new(*c.center(), c.radius(), 0.0, std::f64::consts::PI * 2.0);
+                let arc = Arc::new(c.center(), c.radius(), 0.0, std::f64::consts::PI * 2.0);
                 Some(self.write_circle(&arc))
             },
             EntityGeometry::Arc(a) => Some(self.write_arc(a)),
@@ -178,7 +180,6 @@ impl STEPExporter {
             EntityGeometry::BSpline(b) => Some(self.write_b_spline_curve(b)),
             EntityGeometry::NURBS(n) => Some(self.write_nurbs_surface(n)),
             EntityGeometry::Polyline(p) => Some(self.write_polyline(p)),
-            EntityGeometry::Curve(_) => None,
             _ => None,
         }
     }
@@ -210,7 +211,7 @@ impl STEPExporter {
         let entity_count = self.entity_counter - 1;
 
         footer.push_str("SECTION-ENTITY-ACCESS-COUNTER(");
-        footer.push_str(&format!("{})", entity_count);
+        footer.push_str(&format!("{})", entity_count));
         footer.push('\n');
 
         footer.push_str("ENDSEC-ISO-10303-21;\n");
@@ -230,11 +231,11 @@ impl Exporter for STEPExporter {
         extension.to_lowercase() == "step" || extension.to_lowercase() == "stp"
     }
 
-    fn export_to_file(&self, doc: &Document, filename: &str, _options: Option<ExportOptions>) -> Result<(), Error> {
+    fn export_to_file(&self, doc: &Document, filename: &str) -> Result<(), Error> {
         let file = File::create(filename).map_err(|e| Error::Io(e.to_string()))?;
         let mut writer = BufWriter::new(file);
 
-        let content = self.export_to_string(doc)?;
+        let content = self.export_to_string(doc).map_err(Error::ExportError)?;
 
         writer.write_all(content.as_bytes())
             .map_err(|e| Error::Io(e.to_string()))?;
@@ -242,27 +243,26 @@ impl Exporter for STEPExporter {
         Ok(())
     }
 
-    fn export_to_bytes(&self, doc: &Document, _options: Option<ExportOptions>) -> Result<Vec<u8>, Error> {
+    fn export_to_bytes(&self, doc: &Document) -> Result<Vec<u8>, Error> {
         self.export_to_string(doc)
             .map(|s| s.into_bytes())
-            .map_err(|e| Error::ExportError(e))
-    }
-
-    fn get_format_info(&self) -> crate::io::FormatInfo {
-        crate::io::FormatInfo {
-            name: "STEP (AP214)".to_string(),
-            extension: "step".to_string(),
-            mime_type: "application/step".to_string(),
-            description: "STEP AP214 (Configuration Controlled Design)".to_string(),
-            supports_layers: true,
-            supports_blocks: true,
-            supports_nurbs: true,
-            version: Some("AP214".to_string()),
-        }
+            .map_err(Error::ExportError)
     }
 }
 
 impl STEPExporter {
+    pub fn get_format_info(&self) -> crate::io::FormatInfo {
+        crate::io::FormatInfo::new(
+            "step",
+            "STEP",
+            "STEP AP214 (Configuration Controlled Design)",
+            false,
+        )
+        .with_version("AP203")
+        .with_version("AP214")
+        .with_version("AP242")
+    }
+
     pub fn export_to_string(&self, doc: &Document) -> Result<String, String> {
         let mut exporter = STEPExporter::new();
 

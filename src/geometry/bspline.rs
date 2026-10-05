@@ -47,6 +47,11 @@ impl BSpline {
     }
 
     #[inline]
+    pub fn control_points_mut(&mut self) -> &mut [Point] {
+        &mut self.control_points
+    }
+
+    #[inline]
     pub fn knots(&self) -> &[f64] {
         &self.knots
     }

@@ -54,7 +54,7 @@ impl Group {
     pub fn add_multiple(&mut self, object_ids: &[super::data_structure::ObjectId]) -> usize {
         let mut added = 0;
         for id in object_ids {
-            if self.add(*id) {
+            if self.add(id.clone()) {
                 added += 1;
             }
         }
@@ -392,6 +392,7 @@ impl GroupProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_structure::ObjectId;
 
     #[test]
     fn test_group_creation() {
@@ -407,9 +408,9 @@ mod tests {
         let id2 = ObjectId::new();
         let id3 = ObjectId::new();
 
-        assert!(group.add(id1));
+        assert!(group.add(id1.clone()));
         assert!(group.add(id2));
-        assert!(!group.add(id1)); // duplicate
+        assert!(!group.add(id1.clone())); // duplicate
         assert_eq!(group.member_count(), 2);
 
         assert!(group.contains(&id1));
@@ -432,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_group_manager() {
-        let manager = GroupManager::new();
+        let mut manager = GroupManager::new();
         let group = manager.create(Some("TestGroup"));
         assert_eq!(group.name, "TestGroup");
     }
@@ -459,8 +460,8 @@ mod tests {
         let id1 = ObjectId::new();
         let id2 = ObjectId::new();
 
-        manager.create_from_selection(Some("Group1"), &[id1]);
-        manager.create_from_selection(Some("Group2"), &[id2]);
+        manager.create_from_selection(Some("Group1"), &[id1.clone()]);
+        manager.create_from_selection(Some("Group2"), &[id2.clone()]);
 
         assert_eq!(manager.find_group(&id1), Some("Group1"));
         assert_eq!(manager.find_group(&id2), Some("Group2"));
@@ -506,7 +507,7 @@ mod tests {
         let mut group = Group::new();
         let id = ObjectId::new();
 
-        assert!(group.add(id));
+        assert!(group.add(id.clone()));
         assert!(!group.add(id)); // should not add duplicate
         assert_eq!(group.member_count(), 1);
     }

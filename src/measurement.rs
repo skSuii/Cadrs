@@ -1,4 +1,4 @@
-use crate::geometry::{Point, Vector2, Line, Circle, Arc, Ellipse, Polyline, BSpline, NURBS, Curve};
+use crate::geometry::{Point, Circle, Arc, Curve};
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,12 +85,12 @@ impl DistanceMeasurement {
     
     pub fn format(&self, decimals: u32) -> String {
         format!(
-            "Distance: {:.3$} | Δx: {:.3$} | Δy: {:.3$} | Angle: {:.2$}°",
+            "Distance: {:.4$} | Δx: {:.4$} | Δy: {:.4$} | Angle: {:.4$}°",
             self.distance,
             self.delta_x,
             self.delta_y,
             self.angle,
-            decimals
+            decimals as usize
         )
     }
 }
@@ -108,7 +108,7 @@ impl MeasurementTool for DistanceMeasurement {
         MeasurementResult {
             value: self.distance,
             unit: self.unit,
-            display: format!("{:.1$} {}", self.distance, decimals, self.unit.abbreviation()),
+            display: format!("{:.prec$} {}", self.distance, self.unit.abbreviation(), prec = decimals as usize),
         }
     }
 }
@@ -166,10 +166,10 @@ impl AngleMeasurement {
                 "Angle: {:.2$}° (reflex: {:.2$}°)",
                 self.angle,
                 360.0 - self.angle,
-                decimals
+                decimals as usize
             )
         } else {
-            format!("Angle: {:.2$}°", self.angle, decimals)
+            format!("Angle: {:.1$}°", self.angle, decimals as usize)
         }
     }
 }
@@ -187,7 +187,7 @@ impl MeasurementTool for AngleMeasurement {
         MeasurementResult {
             value: self.angle,
             unit: self.unit,
-            display: format!("{:.1$}°", self.angle, decimals),
+            display: format!("{:.1$}°", self.angle, decimals as usize),
         }
     }
 }
@@ -267,12 +267,12 @@ impl AreaMeasurement {
     
     pub fn format(&self, decimals: u32) -> String {
         format!(
-            "Area: {:.3$} {}² | Perimeter: {:.3$} {}",
+            "Area: {:.4$} {}² | Perimeter: {:.4$} {}",
             self.area,
             self.unit.abbreviation(),
             self.perimeter,
             self.unit.abbreviation(),
-            decimals
+            decimals as usize
         )
     }
 }
@@ -290,7 +290,7 @@ impl MeasurementTool for AreaMeasurement {
         MeasurementResult {
             value: self.area,
             unit: self.unit,
-            display: format!("{:.1$} {}^2", self.area, decimals, self.unit.abbreviation()),
+            display: format!("{:.prec$} {}^2", self.area, self.unit.abbreviation(), prec = decimals as usize),
         }
     }
 }
@@ -352,10 +352,10 @@ impl RadiusMeasurement {
     
     pub fn format(&self, decimals: u32) -> String {
         format!(
-            "Radius: {:.3$} | Diameter: {:.3$}",
+            "Radius: {:.2$} | Diameter: {:.2$}",
             self.radius,
             self.diameter,
-            decimals
+            decimals as usize
         )
     }
 }
@@ -373,7 +373,7 @@ impl MeasurementTool for RadiusMeasurement {
         MeasurementResult {
             value: self.radius,
             unit: self.unit,
-            display: format!("R {:.1$} {}", self.radius, decimals, self.unit.abbreviation()),
+            display: format!("R {:.prec$} {}", self.radius, self.unit.abbreviation(), prec = decimals as usize),
         }
     }
 }
@@ -416,11 +416,11 @@ impl ArcLengthMeasurement {
     
     pub fn format(&self, decimals: u32) -> String {
         format!(
-            "Arc Length: {:.3$} | Chord: {:.3$} | Angle: {:.2$}°",
+            "Arc Length: {:.3$} | Chord: {:.3$} | Angle: {:.3$}°",
             self.arc_length,
             self.chord_length,
             self.sweep_angle,
-            decimals
+            decimals as usize
         )
     }
 }
@@ -438,7 +438,7 @@ impl MeasurementTool for ArcLengthMeasurement {
         MeasurementResult {
             value: self.arc_length,
             unit: self.unit,
-            display: format!("{:.1$} {}", self.arc_length, decimals, self.unit.abbreviation()),
+            display: format!("{:.prec$} {}", self.arc_length, self.unit.abbreviation(), prec = decimals as usize),
         }
     }
 }
@@ -476,13 +476,8 @@ impl MeasurementCalculator {
         (radius, area)
     }
     
-    pub fn calculate_curve_length(curve: &Curve, tolerance: f64, unit: MeasurementUnit) -> f64 {
-        match curve {
-            Curve::Line(line) => line.length() * unit.conversion_factor(),
-            Curve::Circle(circle) => 2.0 * std::f64::consts::PI * circle.radius * unit.conversion_factor(),
-            Curve::Arc(arc) => arc.radius * (arc.end_angle - arc.start_angle).abs() * unit.conversion_factor(),
-            _ => 0.0,
-        }
+    pub fn calculate_curve_length(curve: &dyn Curve, tolerance: f64, unit: MeasurementUnit) -> f64 {
+        curve.length(tolerance) * unit.conversion_factor()
     }
     
     pub fn convert_distance(value: f64, from: MeasurementUnit, to: MeasurementUnit) -> f64 {
@@ -577,5 +572,70 @@ impl MeasurementStatistics {
                 unit.abbreviation()
             )
         }
+    }
+}
+
+// ---------------- 实体测量 ----------------
+
+fn polyline_length(pts: &[Point]) -> f64 {
+    pts.windows(2).map(|w| w[0].distance_to(&w[1])).sum()
+}
+
+fn polygon_area(pts: &[Point]) -> f64 {
+    let n = pts.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        s += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    (s / 2.0).abs()
+}
+
+/// 实体长度（曲线长度；点/文字/标注返回 0）
+pub fn entity_length(entity: &crate::data_structure::Entity) -> f64 {
+    use crate::data_structure::EntityGeometry;
+    use crate::render::tessellation::{bspline_points, nurbs_points};
+    match entity.geometry() {
+        EntityGeometry::Line(l) => l.length(),
+        EntityGeometry::Circle(c) => c.circumference(),
+        EntityGeometry::Arc(a) => a.length(),
+        EntityGeometry::Ellipse(e) => e.circumference_approx(),
+        EntityGeometry::Polyline(p) => {
+            let pts: Vec<Point> = p.vertices.iter().map(|v| Point::new2d(v.x, v.y)).collect();
+            let mut len = polyline_length(&pts);
+            if p.is_closed && pts.len() > 2 {
+                len += pts[pts.len() - 1].distance_to(&pts[0]);
+            }
+            len
+        }
+        EntityGeometry::BSpline(s) => polyline_length(&bspline_points(s, 256)),
+        EntityGeometry::NURBS(n) => polyline_length(&nurbs_points(n, 256)),
+        _ => 0.0,
+    }
+}
+
+/// 实体面积（闭合形状；开放形状返回 0）
+pub fn entity_area(entity: &crate::data_structure::Entity) -> f64 {
+    use crate::data_structure::EntityGeometry;
+    match entity.geometry() {
+        EntityGeometry::Circle(c) => c.area(),
+        EntityGeometry::Ellipse(e) => e.area(),
+        EntityGeometry::Polyline(p) => {
+            if !p.is_closed {
+                return 0.0;
+            }
+            let pts: Vec<Point> = p.vertices.iter().map(|v| Point::new2d(v.x, v.y)).collect();
+            polygon_area(&pts)
+        }
+        EntityGeometry::Solid { points, .. } => polygon_area(points),
+        EntityGeometry::Hatch { boundary_paths, .. } => boundary_paths
+            .iter()
+            .filter(|bp| bp.is_polyline)
+            .map(|bp| polygon_area(&bp.edges.iter().map(|e| e.start_point).collect::<Vec<_>>()))
+            .sum(),
+        _ => 0.0,
     }
 }

@@ -76,19 +76,25 @@ impl SelectionFilter {
         }
 
         if !self.layers.is_empty() {
-            if let Some(layer) = &entity.layer {
-                if !self.layers.contains(layer) {
-                    return false;
-                }
-            } else {
-                if !self.layers.contains(&"0".to_string()) {
-                    return false;
-                }
+            let layer = entity.layer_id.to_string();
+            if !self.layers.contains(&layer) {
+                return false;
             }
         }
 
         if !self.colors.is_empty() {
-            if !self.colors.contains(&entity.color) {
+            let matched = entity.properties.get("color").and_then(|color| {
+                let parts: Vec<&str> = color.split(',').collect();
+                if parts.len() == 3 {
+                    let r = parts[0].trim().parse::<u8>().ok()?;
+                    let g = parts[1].trim().parse::<u8>().ok()?;
+                    let b = parts[2].trim().parse::<u8>().ok()?;
+                    Some((r, g, b))
+                } else {
+                    None
+                }
+            });
+            if !matches!(matched, Some(rgb) if self.colors.contains(&rgb)) {
                 return false;
             }
         }
@@ -219,7 +225,7 @@ impl fmt::Display for SelectionSet {
             f,
             "SelectionSet(count={}, mode={})",
             self.entities.len(),
-            self.mode
+            format!("{:?}", self.mode)
         )
     }
 }
@@ -354,18 +360,20 @@ impl fmt::Display for SelectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_structure::{ObjectId, Entity, EntityType, EntityGeometry};
+    use crate::geometry::Point;
 
     #[test]
     fn test_selection_set() {
         let mut set = SelectionSet::new();
 
-        let id1 = super::super::data_structure::ObjectId::new();
-        let id2 = super::super::data_structure::ObjectId::new();
+        let id1 = ObjectId::new();
+        let id2 = ObjectId::new();
 
-        set.add(id1);
+        set.add(id1.clone());
         assert_eq!(set.count(), 1);
 
-        set.add(id2);
+        set.add(id2.clone());
         assert_eq!(set.count(), 2);
 
         set.remove(&id1);
@@ -377,24 +385,12 @@ mod tests {
 
     #[test]
     fn test_selection_filter() {
-        let filter = SelectionFilter::with_entity_types(vec!["Line", "Circle"]);
+        let filter = SelectionFilter::with_entity_types(vec!["Line".to_string(), "Circle".to_string()]);
 
-        struct MockEntity {
-            entity_type: super::super::data_structure::EntityType,
-        }
+        let line = Entity::new(EntityType::Line, EntityGeometry::Point(Point::origin()));
+        let arc = Entity::new(EntityType::Arc, EntityGeometry::Point(Point::origin()));
 
-        impl super::super::data_structure::Entity for MockEntity {
-            fn entity_type(&self) -> super::super::data_structure::EntityType { self.entity_type.clone() }
-            fn id(&self) -> super::super::data_structure::ObjectId { super::super::data_structure::ObjectId::new() }
-            fn layer(&self) -> &Option<String> { &None }
-            fn color(&self) -> (u8, u8, u8) { (0, 0, 0) }
-            fn transform(&self) -> &super::super::data_structure::Transform { &super::super::data_structure::Transform::identity() }
-            fn set_layer(&mut self, _: &str) {}
-            fn set_color(&mut self, _: (u8, u8, u8)) {}
-            fn set_transform(&mut self, _: super::super::data_structure::Transform) {}
-        }
-
-        assert!(filter.matches(&MockEntity { entity_type: super::super::data_structure::EntityType::Line }));
-        assert!(!filter.matches(&MockEntity { entity_type: super::super::data_structure::EntityType::Arc }));
+        assert!(filter.matches(&line));
+        assert!(!filter.matches(&arc));
     }
 }

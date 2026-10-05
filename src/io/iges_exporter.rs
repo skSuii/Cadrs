@@ -228,7 +228,7 @@ impl IGESExporter {
             .collect::<String>();
 
         let param_line = format!("1,{},{},1,{},{},{},{},{},{},1.0,0,0,1.0,{};",
-            degree, num_points, control_points_str, knots_str, 0, 0, 0, 0);
+            degree, num_points, control_points_str, knots_str, 0, 0, 0, 0, 0);
         let param_ptr = self.add_parameter(param_line);
 
         let entity_type = if is_curve { 126 } else { 128 };
@@ -265,7 +265,7 @@ impl IGESExporter {
 
         let mut coords = String::new();
         for v in vertices {
-            coords.push_str(&format!("{},{},{},", v.x(), v.y(), v.z()));
+            coords.push_str(&format!("{},{},{},", v.x, v.y, 0.0));
         }
 
         let param_line = format!("1,{},{};", vertices.len(), coords);
@@ -384,8 +384,8 @@ impl Exporter for IGESExporter {
         extension.to_lowercase() == "iges" || extension.to_lowercase() == "igs"
     }
 
-    fn export_to_file(&self, doc: &Document, filename: &str, _options: Option<ExportOptions>) -> Result<(), Error> {
-        let content = self.export_to_string(doc)?;
+    fn export_to_file(&self, doc: &Document, filename: &str) -> Result<(), Error> {
+        let content = self.export_to_string(doc).map_err(Error::ExportError)?;
 
         let file = File::create(filename).map_err(|e| Error::Io(e.to_string()))?;
         let mut writer = BufWriter::new(file);
@@ -395,27 +395,26 @@ impl Exporter for IGESExporter {
         Ok(())
     }
 
-    fn export_to_bytes(&self, doc: &Document, _options: Option<ExportOptions>) -> Result<Vec<u8>, Error> {
+    fn export_to_bytes(&self, doc: &Document) -> Result<Vec<u8>, Error> {
         self.export_to_string(doc)
             .map(|s| s.into_bytes())
-            .map_err(|e| Error::ExportError(e))
-    }
-
-    fn get_format_info(&self) -> crate::io::FormatInfo {
-        crate::io::FormatInfo {
-            name: "IGES (V5.3)".to_string(),
-            extension: "iges".to_string(),
-            mime_type: "application/iges".to_string(),
-            description: "IGES V5.3 Initial Graphics Exchange Specification".to_string(),
-            supports_layers: true,
-            supports_blocks: true,
-            supports_nurbs: true,
-            version: Some("5.3".to_string()),
-        }
+            .map_err(Error::ExportError)
     }
 }
 
 impl IGESExporter {
+    pub fn get_format_info(&self) -> crate::io::FormatInfo {
+        crate::io::FormatInfo::new(
+            "iges",
+            "IGES",
+            "IGES V5.3 Initial Graphics Exchange Specification",
+            false,
+        )
+        .with_version("5.0")
+        .with_version("5.1")
+        .with_version("5.3")
+    }
+
     pub fn export_to_string(&self, doc: &Document) -> Result<String, String> {
         let mut exporter = IGESExporter::new();
         exporter.line_counter = 1;
@@ -440,7 +439,7 @@ impl IGESExporter {
                 EntityGeometry::Point(p) => {
                     let param_line = format!("1,{},{},{};", p.x(), p.y(), p.z());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     116     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     116     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
@@ -449,7 +448,7 @@ impl IGESExporter {
                         l.start_point().x(), l.start_point().y(), l.start_point().z(),
                         l.end_point().x(), l.end_point().y(), l.end_point().z());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     110     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     110     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
@@ -457,7 +456,7 @@ impl IGESExporter {
                     let center = c.center();
                     let param_line = format!("1,{},{},{},1.,0.,0.,0.,1.,{};", center.x(), center.y(), center.z(), c.radius());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     100     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     100     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
@@ -465,7 +464,7 @@ impl IGESExporter {
                     let center = a.center();
                     let param_line = format!("1,{},{},{},1.,0.,0.,0.,1.,{},{},{};", center.x(), center.y(), center.z(), a.radius(), a.start_angle(), a.end_angle());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     100     1     0     1     0     0     0     0     0 1     0     0     1     1     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     100     1     0     1     0     0     0     0     0 1     0     0     1     1     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
@@ -473,24 +472,24 @@ impl IGESExporter {
                     let center = e.center();
                     let param_line = format!("1,{},{},{},1.,0.,0.,0.,1.,{},{},0.;", center.x(), center.y(), center.z(), e.major_axis(), e.minor_axis());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     104     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     104     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
                 EntityGeometry::BSpline(b) => {
-                    let param_line = format!("1,{},{},1.,{},,1.0E+00,0,0,1.0;", b.degree());
+                    let param_line = format!("1,{},0,1.,{},0,1.0E+00,0,0,1.0;", b.degree(), b.control_points().len());
                     params.push(format!("P{}={}", params.len() + 1, param_line));
-                    dir_entries.push(format!("     126     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     126     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },
                 EntityGeometry::Polyline(p) => {
-                    let param_line = format!("1,{},", p.vertices().len());
+                    let mut param_line = format!("1,{},", p.vertices().len());
                     for v in p.vertices() {
-                        param_line.push_str(&format!("{},{},{},", v.x(), v.y(), v.z()));
+                        param_line.push_str(&format!("{},{},{},", v.x, v.y, 0.0));
                     }
                     params.push(format!("{};", param_line));
-                    dir_entries.push(format!("     110     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0", entity_num));
+                    dir_entries.push(format!("     110     1     0     1     0     0     0     0     0 1     0     0     1     0     0     0     0    8        0"));
                     dir_entries.push(format!("D{}     1", entity_num));
                     entity_num += 1;
                 },

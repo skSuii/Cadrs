@@ -129,6 +129,16 @@ impl Document {
     }
 
     #[inline]
+    pub fn get_entity_mut(&mut self, entity_id: &ObjectId) -> Option<&mut Entity> {
+        self.entities.get_mut(entity_id)
+    }
+
+    #[inline]
+    pub fn entity_exists(&self, entity_id: &ObjectId) -> bool {
+        self.entities.contains_key(entity_id)
+    }
+
+    #[inline]
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }

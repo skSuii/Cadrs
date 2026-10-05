@@ -40,27 +40,6 @@ impl Default for TextStyle {
     }
 }
 
-impl Clone for TextStyle {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            font_name: self.font_name.clone(),
-            big_font_name: self.big_font_name.clone(),
-            height: self.height,
-            width_factor: self.width_factor,
-            oblique_angle: self.oblique_angle,
-            is_backwards: self.is_backwards,
-            is_upside_down: self.is_upside_down,
-            is_vertical: self.is_vertical,
-            color: self.color,
-            layer: self.layer.clone(),
-            annotation_scaling: self.annotation_scaling,
-            allow_fixed_height: self.allow_fixed_height,
-            is_loaded: self.is_loaded,
-        }
-    }
-}
-
 impl PartialEq for TextStyle {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name

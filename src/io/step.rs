@@ -415,10 +415,9 @@ impl<'a> STEPParser<'a> {
     }
 
     fn create_b_spline_surface(&self, params: &[String]) -> Option<Entity> {
-        let degree_u = self.get_parameter_as_f64(params, 0).unwrap_or(3.0) as usize;
-        let degree_v = self.get_parameter_as_f64(params, 1).unwrap_or(3.0) as usize;
+        let degree_u = self.get_parameter_as_f64(params, 0).unwrap_or(3.0).max(1.0) as usize;
 
-        let nurbs = NURBS::new(degree_u, degree_v);
+        let nurbs = NURBS::from_points(vec![Point::origin()], degree_u);
         Some(Entity::new(EntityType::NURBS, EntityGeometry::NURBS(nurbs)))
     }
 
@@ -503,8 +502,8 @@ impl<'a> STEPParser<'a> {
     fn get_document(mut self) -> Document {
         let mut doc = Document::new("Imported from STEP".to_string());
 
-        for entity in self.entities {
-            if let Some(cad_entity) = self.create_entity_from_type(&entity) {
+        for entity in &self.entities {
+            if let Some(cad_entity) = self.create_entity_from_type(entity) {
                 doc.add_entity(cad_entity);
             }
         }
@@ -543,6 +542,18 @@ impl STEPImporter {
         }
         STEPVersion::AP214
     }
+
+    pub fn get_format_info(&self) -> crate::io::FormatInfo {
+        crate::io::FormatInfo::new(
+            "step",
+            "STEP",
+            "STEP AP214 (Configuration Controlled Design)",
+            false,
+        )
+        .with_version("AP203")
+        .with_version("AP214")
+        .with_version("AP242")
+    }
 }
 
 impl crate::io::Importer for STEPImporter {
@@ -567,24 +578,12 @@ impl crate::io::Importer for STEPImporter {
         let content = String::from_utf8_lossy(data);
         self.parse_file(&content).map_err(|e| Error::ParseError(e))
     }
-
-    fn get_format_info(&self) -> crate::io::FormatInfo {
-        crate::io::FormatInfo {
-            name: "STEP (AP214)".to_string(),
-            extension: "step".to_string(),
-            mime_type: "application/step".to_string(),
-            description: "STEP AP214 (Configuration Controlled Design)".to_string(),
-            supports_layers: true,
-            supports_blocks: true,
-            supports_nurbs: true,
-            version: Some("AP214".to_string()),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::Importer;
 
     #[test]
     fn test_step_importer_can_import() {

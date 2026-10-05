@@ -88,6 +88,48 @@ impl Point {
     pub fn scale(&self, s: f64) -> Point {
         Point::new(self.x * s, self.y * s, self.z * s)
     }
+
+    #[inline]
+    pub fn midpoint(&self, other: &Point) -> Point {
+        Point::new(
+            (self.x + other.x) / 2.0,
+            (self.y + other.y) / 2.0,
+            (self.z + other.z) / 2.0,
+        )
+    }
+
+    #[inline]
+    pub fn angle_to(&self, other: &Point) -> f64 {
+        (other.y - self.y).atan2(other.x - self.x)
+    }
+}
+
+impl std::ops::Add for Point {
+    type Output = Point;
+    fn add(self, other: Point) -> Point {
+        Point::new(self.x + other.x, self.y + other.y, self.z)
+    }
+}
+
+impl std::ops::Sub for Point {
+    type Output = Point;
+    fn sub(self, other: Point) -> Point {
+        Point::new(self.x - other.x, self.y - other.y, self.z)
+    }
+}
+
+impl std::ops::Mul<f64> for Point {
+    type Output = Point;
+    fn mul(self, scalar: f64) -> Point {
+        Point::new(self.x * scalar, self.y * scalar, self.z)
+    }
+}
+
+impl std::ops::Neg for Point {
+    type Output = Point;
+    fn neg(self) -> Point {
+        Point::new(-self.x, -self.y, -self.z)
+    }
 }
 
 impl fmt::Display for Point {

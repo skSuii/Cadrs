@@ -66,6 +66,16 @@ impl Circle {
         let to_point = p.to_vector2() - self.center.to_vector2();
         to_point.y.atan2(to_point.x)
     }
+
+    #[inline]
+    pub fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    #[inline]
+    pub fn center(&self) -> Point {
+        self.center
+    }
 }
 
 impl fmt::Display for Circle {

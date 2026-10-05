@@ -162,10 +162,13 @@ impl MoveTool {
     pub fn transform_entity(&self, entity: &super::super::data_structure::Entity) -> super::super::data_structure::Entity {
         let mut transformed = entity.clone();
 
-        if let Some(transform) = transformed.transform_mut() {
-            let matrix = crate::math::Matrix4::translation_2d(self.displacement.x, self.displacement.y);
-            transform.matrix = matrix * transform.matrix;
-        }
+        let mut t = transformed.transform();
+        t.translation = crate::geometry::Point::new(
+            t.translation.x + self.displacement.x,
+            t.translation.y + self.displacement.y,
+            t.translation.z,
+        );
+        transformed.set_transform(t);
 
         transformed
     }
@@ -221,14 +224,18 @@ impl RotateTool {
     pub fn transform_entity(&self, entity: &super::super::data_structure::Entity) -> super::super::data_structure::Entity {
         let mut transformed = entity.clone();
 
-        if let Some(transform) = transformed.transform_mut() {
-            let translation1 = crate::math::Matrix4::translation_2d(-self.center.x, -self.center.y);
-            let rotation = crate::math::Matrix4::rotation_2d(self.angle);
-            let translation2 = crate::math::Matrix4::translation_2d(self.center.x, self.center.y);
+        let mut t = transformed.transform();
+        t.rotation += self.angle;
 
-            let matrix = translation2 * rotation * translation1;
-            transform.matrix = matrix * transform.matrix;
-        }
+        let (cos_r, sin_r) = (self.angle.cos(), self.angle.sin());
+        let dx = t.translation.x - self.center.x;
+        let dy = t.translation.y - self.center.y;
+        t.translation = crate::geometry::Point::new(
+            self.center.x + dx * cos_r - dy * sin_r,
+            self.center.y + dx * sin_r + dy * cos_r,
+            t.translation.z,
+        );
+        transformed.set_transform(t);
 
         transformed
     }
@@ -286,14 +293,15 @@ impl ScaleTool {
     pub fn transform_entity(&self, entity: &super::super::data_structure::Entity) -> super::super::data_structure::Entity {
         let mut transformed = entity.clone();
 
-        if let Some(transform) = transformed.transform_mut() {
-            let translation1 = crate::math::Matrix4::translation_2d(-self.base_point.x, -self.base_point.y);
-            let scale = crate::math::Matrix4::scale_2d(self.scale_factor, self.scale_factor);
-            let translation2 = crate::math::Matrix4::translation_2d(self.base_point.x, self.base_point.y);
-
-            let matrix = translation2 * scale * translation1;
-            transform.matrix = matrix * transform.matrix;
-        }
+        let mut t = transformed.transform();
+        let s = self.scale_factor;
+        t.scale *= s;
+        t.translation = crate::geometry::Point::new(
+            self.base_point.x + (t.translation.x - self.base_point.x) * s,
+            self.base_point.y + (t.translation.y - self.base_point.y) * s,
+            t.translation.z,
+        );
+        transformed.set_transform(t);
 
         transformed
     }
@@ -338,30 +346,30 @@ impl MirrorTool {
     pub fn transform_entity(&self, entity: &super::super::data_structure::Entity) -> super::super::data_structure::Entity {
         let mut transformed = entity.clone();
 
-        if let Some(transform) = transformed.transform_mut() {
-            let dx = self.second_point.x - self.first_point.x;
-            let dy = self.second_point.y - self.first_point.y;
-            let d = dx * dx + dy * dy;
+        let dx = self.second_point.x - self.first_point.x;
+        let dy = self.second_point.y - self.first_point.y;
+        let d = dx * dx + dy * dy;
 
-            if d > 0.0 {
-                let a = dx * dx - dy * dy;
-                let b = 2.0 * dx * dy;
-                let c = 2.0 * dx * (self.first_point.y) - 2.0 * dy * (self.first_point.x);
+        if d > 0.0 {
+            let mut t = transformed.transform();
 
-                let tx = transform.matrix.m[0][3];
-                let ty = transform.matrix.m[1][3];
+            let tr = t.translation;
+            let ex = tr.x - self.first_point.x;
+            let ey = tr.y - self.first_point.y;
+            let dot = (ex * dx + ey * dy) / d;
+            let px = self.first_point.x + dot * dx;
+            let py = self.first_point.y + dot * dy;
+            t.translation = crate::geometry::Point::new(
+                2.0 * px - tr.x,
+                2.0 * py - tr.y,
+                tr.z,
+            );
 
-                let mirror_matrix = crate::math::Matrix4::new(
-                    a / d, b / d, 0.0, 0.0,
-                    b / d, -a / d, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    c * (self.first_point.x - a * tx / d - b * ty / d),
-                    c * (self.first_point.y - b * tx / d + a * ty / d),
-                    0.0, 1.0,
-                );
+            let axis_angle = dy.atan2(dx);
+            t.rotation = 2.0 * axis_angle - t.rotation;
+            t.scale = -t.scale;
 
-                transform.matrix = mirror_matrix * transform.matrix;
-            }
+            transformed.set_transform(t);
         }
 
         transformed
@@ -375,6 +383,10 @@ pub struct ArrayTool {
     column_spacing: f64,
     angle: f64,
     associativity: bool,
+    array_type: ArrayType,
+    center_point: Option<crate::geometry::Point>,
+    polar_angle: f64,
+    polar_fill_angle: f64,
 }
 
 impl Default for ArrayTool {
@@ -440,22 +452,23 @@ impl ArrayTool {
 
                 let mut transformed = entity.clone();
 
-                if let Some(transform) = transformed.transform_mut() {
-                    let dx = col as f64 * self.column_spacing;
-                    let dy = row as f64 * self.row_spacing;
+                let mut t = transformed.transform();
+                let dx = col as f64 * self.column_spacing;
+                let dy = row as f64 * self.row_spacing;
 
-                    if self.angle != 0.0 {
-                        let (cos_a, sin_a) = (self.angle.cos(), self.angle.sin());
-                        let dx_rot = dx * cos_a - dy * sin_a;
-                        let dy_rot = dx * sin_a + dy * cos_a;
+                let (offset_x, offset_y) = if self.angle != 0.0 {
+                    let (cos_a, sin_a) = (self.angle.cos(), self.angle.sin());
+                    (dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a)
+                } else {
+                    (dx, dy)
+                };
 
-                        let translation = crate::math::Matrix4::translation_2d(dx_rot, dy_rot);
-                        transform.matrix = translation * transform.matrix;
-                    } else {
-                        let translation = crate::math::Matrix4::translation_2d(dx, dy);
-                        transform.matrix = translation * transform.matrix;
-                    }
-                }
+                t.translation = crate::geometry::Point::new(
+                    t.translation.x + offset_x,
+                    t.translation.y + offset_y,
+                    t.translation.z,
+                );
+                transformed.set_transform(t);
 
                 copies.push(transformed);
             }

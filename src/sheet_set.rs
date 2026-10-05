@@ -486,8 +486,10 @@ impl SheetSubset {
         }
     }
 
-    pub fn remove_sheet(&mut self, sheet_id: &str) {
+    pub fn remove_sheet(&mut self, sheet_id: &str) -> bool {
+        let len = self.sheet_ids.len();
         self.sheet_ids.retain(|id| id != sheet_id);
+        self.sheet_ids.len() != len
     }
 
     pub fn add_subset(&mut self, subset_id: &str) {
@@ -648,18 +650,19 @@ impl SheetSet {
         properties.creation_date = SystemTime::now();
         properties.modification_date = SystemTime::now();
 
-        let sheet = Sheet::with_properties(properties);
+        let sheet = Sheet::new().with_properties(properties);
         let sheet_id = sheet.id.clone();
 
         self.sheets.insert(sheet_id.clone(), sheet);
-        self.sheet_order.push(sheet_id);
+        self.sheet_order.push(sheet_id.clone());
 
         self.sheets.get_mut(&sheet_id).unwrap()
     }
 
     pub fn add_sheet(&mut self, sheet: Sheet) {
-        self.sheets.insert(sheet.id.clone(), sheet);
-        self.sheet_order.push(sheet.id.clone());
+        let id = sheet.id.clone();
+        self.sheets.insert(id.clone(), sheet);
+        self.sheet_order.push(id);
         self.is_modified = true;
     }
 
@@ -695,18 +698,19 @@ impl SheetSet {
     }
 
     pub fn create_subset(&mut self, name: &str) -> &mut SheetSubset {
-        let subset = SheetSubset::with_name(name);
+        let subset = SheetSubset::new().with_name(name);
         let subset_id = subset.id.clone();
 
         self.subsets.insert(subset_id.clone(), subset);
-        self.subset_order.push(subset_id);
+        self.subset_order.push(subset_id.clone());
 
         self.subsets.get_mut(&subset_id).unwrap()
     }
 
     pub fn add_subset(&mut self, subset: SheetSubset) {
-        self.subsets.insert(subset.id.clone(), subset);
-        self.subset_order.push(subset.id.clone());
+        let id = subset.id.clone();
+        self.subsets.insert(id.clone(), subset);
+        self.subset_order.push(id);
         self.is_modified = true;
     }
 
@@ -937,7 +941,7 @@ impl ResourceFile {
             .unwrap_or_else(|| path.to_string());
         self.file_type = self.file_path.extension()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| String::new);
+            .unwrap_or_else(|| String::new());
         self
     }
 }
@@ -1124,8 +1128,8 @@ impl SheetSetManager {
     }
 
     pub fn create_sheet_set(&mut self, name: &str) -> &mut SheetSet {
-        let properties = SheetSetProperties::with_name(name);
-        let sheet_set = SheetSet::with_properties(properties);
+        let properties = SheetSetProperties::new().with_name(name);
+        let sheet_set = SheetSet::new().with_properties(properties);
 
         self.sheet_sets.insert(name.to_string(), sheet_set);
         self.active_sheet_set = Some(name.to_string());
@@ -1134,8 +1138,9 @@ impl SheetSetManager {
     }
 
     pub fn add_sheet_set(&mut self, sheet_set: SheetSet) {
-        self.sheet_sets.insert(sheet_set.properties.name.clone(), sheet_set);
-        self.active_sheet_set = Some(sheet_set.properties.name.clone());
+        let name = sheet_set.properties.name.clone();
+        self.sheet_sets.insert(name.clone(), sheet_set);
+        self.active_sheet_set = Some(name);
     }
 
     pub fn get_sheet_set(&self, name: &str) -> Option<&SheetSet> {
@@ -1233,8 +1238,9 @@ impl SheetSetManager {
             let mut imported = 0;
             for sheet in sheets {
                 if sheet_set.sheets.get(&sheet.id).is_none() {
-                    sheet_set.sheets.insert(sheet.id.clone(), sheet);
-                    sheet_set.sheet_order.push(sheet.id);
+                    let id = sheet.id.clone();
+                    sheet_set.sheets.insert(id.clone(), sheet);
+                    sheet_set.sheet_order.push(id);
                     imported += 1;
                 }
             }
@@ -1320,7 +1326,7 @@ mod tests {
 
     #[test]
     fn test_sheet_subset() {
-        let mut subset = SheetSubset::with_name("Architectural");
+        let mut subset = SheetSubset::new().with_name("Architectural");
         subset.add_sheet("sheet1");
         subset.add_sheet("sheet2");
 

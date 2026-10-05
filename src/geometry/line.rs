@@ -74,6 +74,16 @@ impl Line {
     pub fn distance_to_point(&self, p: &Point) -> f64 {
         p.distance_to(&self.closest_point(p))
     }
+
+    #[inline]
+    pub fn start_point(&self) -> Point {
+        self.start
+    }
+
+    #[inline]
+    pub fn end_point(&self) -> Point {
+        self.end
+    }
 }
 
 impl fmt::Display for Line {

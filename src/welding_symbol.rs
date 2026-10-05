@@ -1,4 +1,4 @@
-use crate::geometry::Point;
+use crate::geometry::{Point, Vector2};
 use serde::{Serialize, Deserialize};
 use std::fmt;
 
@@ -421,37 +421,15 @@ impl WeldReferenceLine {
     }
 }
 
-trait ToVector2 {
-    fn to_vector2(&self) -> Vector2;
-}
-
-impl ToVector2 for Point {
-    fn to_vector2(&self) -> Vector2 {
-        Vector2::new(self.x, self.y)
-    }
-}
-
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Line {
     start: Point,
     end: Point,
 }
 
-struct Vector2 {
-    x: f64,
-    y: f64,
+impl Line {
+    fn new(start: Point, end: Point) -> Self {
+        Self { start, end }
+    }
 }
 
-impl Vector2 {
-    fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
-    }
-    
-    fn normalize(&self) -> Self {
-        let len = (self.x * self.x + self.y * self.y).sqrt();
-        if len > 1e-10 {
-            Self::new(self.x / len, self.y / len)
-        } else {
-            Self::new(0.0, 0.0)
-        }
-    }
-}

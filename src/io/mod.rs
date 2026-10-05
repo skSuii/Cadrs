@@ -1,5 +1,9 @@
 pub mod dxf;
 pub mod svg;
+pub mod eps;
+pub mod pdf;
+pub mod wmf;
+pub mod raster;
 pub mod importer;
 pub mod exporter;
 pub mod dwg;
@@ -16,3 +20,4 @@ pub use io::{FormatRegistry, UnifiedDataExchange, ImportOptions, ExportOptions};
 pub use io::{LengthUnit, LayerMappingMode, EntityFilter, CoordinateSystem};
 pub use step_exporter::{STEPExporter, STEPVersion};
 pub use iges_exporter::{IGESExporter, IGESVersion};
+pub use raster::RasterFormat;

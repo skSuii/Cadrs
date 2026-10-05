@@ -235,7 +235,10 @@ impl<'a> IGESParser<'a> {
 
     fn parse_parameter_data_line(&self, line: &str) -> Vec<String> {
         let mut params = Vec::new();
-        let cleaned = line.trim_start_matches("P1234567890".chars());
+        let cleaned = match line.find('=') {
+            Some(pos) => &line[pos + 1..],
+            None => line,
+        };
 
         let mut current = String::new();
         let mut depth = 0;
@@ -451,10 +454,9 @@ impl<'a> IGESParser<'a> {
             return Some(Entity::new(EntityType::NURBS, EntityGeometry::NURBS(nurbs)));
         }
 
-        let degree_u = self.get_f64_param(params, 1).unwrap_or(3.0) as usize;
-        let degree_v = self.get_f64_param(params, 2).unwrap_or(3.0) as usize;
+        let degree_u = self.get_f64_param(params, 1).unwrap_or(3.0).max(1.0) as usize;
 
-        let nurbs = NURBS::new(degree_u, degree_v);
+        let nurbs = NURBS::from_points(vec![Point::origin()], degree_u);
         Some(Entity::new(EntityType::NURBS, EntityGeometry::NURBS(nurbs)))
     }
 
@@ -530,6 +532,18 @@ impl IGESImporter {
         parser.parse()?;
         Ok(parser.get_document())
     }
+
+    pub fn get_format_info(&self) -> crate::io::FormatInfo {
+        crate::io::FormatInfo::new(
+            "iges",
+            "IGES",
+            "IGES V5.3 Initial Graphics Exchange Specification",
+            false,
+        )
+        .with_version("5.0")
+        .with_version("5.1")
+        .with_version("5.3")
+    }
 }
 
 impl crate::io::Importer for IGESImporter {
@@ -557,24 +571,12 @@ impl crate::io::Importer for IGESImporter {
         let content = String::from_utf8_lossy(data);
         self.parse_file(&content).map_err(|e| Error::ParseError(e))
     }
-
-    fn get_format_info(&self) -> crate::io::FormatInfo {
-        crate::io::FormatInfo {
-            name: "IGES (V5.3)".to_string(),
-            extension: "iges".to_string(),
-            mime_type: "application/iges".to_string(),
-            description: "IGES V5.3 Initial Graphics Exchange Specification".to_string(),
-            supports_layers: true,
-            supports_blocks: true,
-            supports_nurbs: true,
-            version: Some("5.3".to_string()),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::Importer;
 
     #[test]
     fn test_iges_importer_can_import() {

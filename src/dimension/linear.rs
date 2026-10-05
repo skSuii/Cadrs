@@ -655,47 +655,121 @@ impl OrdinateDimension {
     }
 }
 
+pub fn text_position_for(geometry: &DimensionGeometry) -> Point {
+    geometry
+        .user_text_location
+        .clone()
+        .unwrap_or_else(|| {
+            geometry
+                .definition_points
+                .first()
+                .cloned()
+                .unwrap_or_else(Point::origin)
+        })
+}
+
+pub fn entity_geometry_from_dimension(
+    geometry: &DimensionGeometry,
+    text_position: Point,
+    angle: f64,
+    extension_lines: bool,
+    center_marks: bool,
+) -> EntityGeometry {
+    let point_at = |i: usize| {
+        geometry
+            .definition_points
+            .get(i)
+            .cloned()
+            .unwrap_or_else(Point::origin)
+    };
+    let dim_type = match geometry.dimension_type {
+        DimensionType::Linear | DimensionType::Baseline | DimensionType::Continued => {
+            crate::data_structure::DimensionType::Linear
+        }
+        DimensionType::Aligned => crate::data_structure::DimensionType::Aligned,
+        DimensionType::Angular => crate::data_structure::DimensionType::Angular,
+        DimensionType::Radial => crate::data_structure::DimensionType::Radius,
+        DimensionType::Diameter => crate::data_structure::DimensionType::Diameter,
+        DimensionType::ArcLength => crate::data_structure::DimensionType::ArcLength,
+        DimensionType::Ordinate => crate::data_structure::DimensionType::Ordinate,
+    };
+    EntityGeometry::Dimension {
+        dim_type,
+        measurement: geometry.measurement,
+        text: geometry.text.clone(),
+        text_position,
+        text_height: geometry.style.text_height,
+        text_rotation: geometry.text_rotation,
+        definition_point: point_at(0),
+        def_point_1: point_at(1),
+        def_point_2: point_at(2),
+        def_point_3: Point::origin(),
+        def_point_4: Point::origin(),
+        angle,
+        extension_lines,
+        center_marks,
+    }
+}
+
 impl From<LinearDimension> for Entity {
     fn from(dim: LinearDimension) -> Self {
+        let center_marks = dim.center_mark.is_some();
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Dimension(DimensionGeometryData::Linear(dim)),
+            entity_geometry_from_dimension(&geometry, text_position_for(&geometry), 0.0, true, center_marks),
         )
     }
 }
 
 impl From<AlignedDimension> for Entity {
     fn from(dim: AlignedDimension) -> Self {
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Dimension(DimensionGeometryData::Aligned(dim)),
+            entity_geometry_from_dimension(&geometry, text_position_for(&geometry), 0.0, true, false),
         )
     }
 }
 
 impl From<AngularDimension> for Entity {
     fn from(dim: AngularDimension) -> Self {
+        let text_location = dim.text_location;
+        let angle = {
+            let pts = &dim.geometry.definition_points;
+            if pts.len() >= 3 {
+                let center = pts[0];
+                (pts[1] - center).to_vector2().angle() - (pts[2] - center).to_vector2().angle()
+            } else {
+                0.0
+            }
+        };
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Dimension(DimensionGeometryData::Angular(dim)),
+            entity_geometry_from_dimension(&geometry, text_location, angle, true, false),
         )
     }
 }
 
 impl From<RadialDimension> for Entity {
     fn from(dim: RadialDimension) -> Self {
+        let arrow = dim.arrow;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Dimension(DimensionGeometryData::Radial(dim)),
+            entity_geometry_from_dimension(&geometry, arrow, 0.0, true, true),
         )
     }
 }
 
 impl From<OrdinateDimension> for Entity {
     fn from(dim: OrdinateDimension) -> Self {
+        let leader_point = dim.leader_point;
+        let geometry = dim.geometry;
         Entity::new(
             EntityType::Dimension,
-            EntityGeometry::Dimension(DimensionGeometryData::Ordinate(dim)),
+            entity_geometry_from_dimension(&geometry, leader_point, 0.0, false, false),
         )
     }
 }

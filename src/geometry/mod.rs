@@ -39,3 +39,5 @@ pub type Line2D = Line;
 pub type Circle2D = Circle;
 pub type Arc2D = Arc;
 pub type Ellipse2D = Ellipse;
+
+pub use crate::math::Vector2;

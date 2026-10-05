@@ -122,12 +122,23 @@ pub enum DimensionType {
     Coordinate,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextStyle {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
     pub alignment: TextAlignment,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            underline: false,
+            alignment: TextAlignment::Left,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -261,6 +272,26 @@ impl Entity {
     #[inline]
     pub fn set_transform(&mut self, transform: Transform) {
         self.transform = transform;
+    }
+
+    #[inline]
+    pub fn transform_mut(&mut self) -> &mut Transform {
+        &mut self.transform
+    }
+
+    #[inline]
+    pub fn get_position(&self) -> Option<Point> {
+        match &self.geometry {
+            EntityGeometry::Point(p) => Some(*p),
+            EntityGeometry::Line(l) => Some(l.start),
+            EntityGeometry::Circle(c) => Some(c.center),
+            EntityGeometry::Arc(a) => Some(a.center),
+            EntityGeometry::Ellipse(e) => Some(e.center),
+            EntityGeometry::Text { position, .. } => Some(*position),
+            EntityGeometry::Dimension { definition_point, .. } => Some(*definition_point),
+            EntityGeometry::BlockRef { position, .. } => Some(*position),
+            _ => None,
+        }
     }
 
     #[inline]

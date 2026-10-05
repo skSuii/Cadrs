@@ -27,7 +27,7 @@ pub enum GripMode {
     Array,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GripPoint {
     pub entity_id: super::super::data_structure::ObjectId,
     pub position: crate::geometry::Point,
@@ -85,7 +85,7 @@ impl GripPoint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GripHotSpot {
     pub grip_points: Vec<GripPoint>,
     pub active_grip: Option<usize>,
@@ -216,26 +216,28 @@ impl GripManager {
         match &entity.entity_type {
             super::super::data_structure::EntityType::Line => {
                 if let Some(line) = self.extract_line(entity) {
-                    grips.push(GripPoint::new(entity_id, line.start, GripType::Endpoint));
-                    grips.push(GripPoint::new(entity_id, line.end, GripType::Endpoint));
+                    grips.push(GripPoint::new(entity_id.clone(), line.start, GripType::Endpoint));
+                    grips.push(GripPoint::new(entity_id.clone(), line.end, GripType::Endpoint));
                     let mid = line.start.midpoint(&line.end);
-                    grips.push(GripPoint::new(entity_id, mid, GripType::Midpoint));
+                    grips.push(GripPoint::new(entity_id.clone(), mid, GripType::Midpoint));
                 }
             }
             super::super::data_structure::EntityType::Circle => {
                 if let Some(circle) = self.extract_circle(entity) {
-                    grips.push(GripPoint::new(entity_id, circle.center, GripType::Center));
-                    grips.push(GripPoint::new(entity_id, circle.center + crate::geometry::Vector2::new(circle.radius, 0.0), GripType::Quadrant));
-                    grips.push(GripPoint::new(entity_id, circle.center + crate::geometry::Vector2::new(0.0, circle.radius), GripType::Quadrant));
+                    let c = circle.center;
+                    grips.push(GripPoint::new(entity_id.clone(), c, GripType::Center));
+                    grips.push(GripPoint::new(entity_id.clone(), crate::geometry::Point::new(c.x + circle.radius, c.y, c.z), GripType::Quadrant));
+                    grips.push(GripPoint::new(entity_id.clone(), crate::geometry::Point::new(c.x, c.y + circle.radius, c.z), GripType::Quadrant));
                 }
             }
             super::super::data_structure::EntityType::Arc => {
                 if let Some(arc) = self.extract_arc(entity) {
-                    grips.push(GripPoint::new(entity_id, arc.center, GripType::Center));
-                    let start = arc.center + crate::geometry::Vector2::new(arc.radius * arc.start_angle.cos(), arc.radius * arc.start_angle.sin());
-                    let end = arc.center + crate::geometry::Vector2::new(arc.radius * arc.end_angle.cos(), arc.radius * arc.end_angle.sin());
-                    grips.push(GripPoint::new(entity_id, start, GripType::Endpoint));
-                    grips.push(GripPoint::new(entity_id, end, GripType::Endpoint));
+                    let c = arc.center;
+                    grips.push(GripPoint::new(entity_id.clone(), c, GripType::Center));
+                    let start = crate::geometry::Point::new(c.x + arc.radius * arc.start_angle.cos(), c.y + arc.radius * arc.start_angle.sin(), c.z);
+                    let end = crate::geometry::Point::new(c.x + arc.radius * arc.end_angle.cos(), c.y + arc.radius * arc.end_angle.sin(), c.z);
+                    grips.push(GripPoint::new(entity_id.clone(), start, GripType::Endpoint));
+                    grips.push(GripPoint::new(entity_id.clone(), end, GripType::Endpoint));
                 }
             }
             _ => {}
@@ -315,7 +317,7 @@ impl GripManager {
     }
 
     fn extract_line(&self, entity: &super::super::data_structure::Entity) -> Option<super::super::geometry::Line> {
-        if let super::super::data_structure::EntityGeometry::Line(line) = &entity.entity_geometry {
+        if let super::super::data_structure::EntityGeometry::Line(line) = &entity.geometry {
             Some(line.clone())
         } else {
             None
@@ -323,7 +325,7 @@ impl GripManager {
     }
 
     fn extract_circle(&self, entity: &super::super::data_structure::Entity) -> Option<super::super::geometry::Circle> {
-        if let super::super::data_structure::EntityGeometry::Circle(circle) = &entity.entity_geometry {
+        if let super::super::data_structure::EntityGeometry::Circle(circle) = &entity.geometry {
             Some(circle.clone())
         } else {
             None
@@ -331,7 +333,7 @@ impl GripManager {
     }
 
     fn extract_arc(&self, entity: &super::super::data_structure::Entity) -> Option<super::super::geometry::Arc> {
-        if let super::super::data_structure::EntityGeometry::Arc(arc) = &entity.entity_geometry {
+        if let super::super::data_structure::EntityGeometry::Arc(arc) = &entity.geometry {
             Some(arc.clone())
         } else {
             None
@@ -353,7 +355,7 @@ impl fmt::Display for GripManager {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "GripManager(entities={}, mode={})",
+            "GripManager(entities={}, mode={:?})",
             self.grip_hotspots.len(),
             self.current_mode
         )

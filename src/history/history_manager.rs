@@ -245,7 +245,7 @@ impl DocumentHistoryManager {
             listener.on_transaction_started(&self.name);
         }
 
-        self
+        transaction_id
     }
 
     pub fn commit_transaction(&mut self) -> bool {
@@ -254,17 +254,16 @@ impl DocumentHistoryManager {
         }
 
         let transaction_id = self.transaction_stack.pop().unwrap();
-        let transaction = self.transactions.iter_mut()
+        if let Some(transaction) = self.transactions.iter_mut()
             .find(|t| t.id == transaction_id)
-            .filter(|t| !t.is_empty());
-
-        if let Some(t) = transaction {
+            .filter(|t| !t.is_empty())
+        {
             for listener in &self.listeners {
-                listener.on_transaction_completed(&t.name, true);
+                listener.on_transaction_completed(&transaction.name, true);
             }
         }
 
-        self
+        true
     }
 
     pub fn rollback_transaction(&mut self) -> bool {
@@ -273,20 +272,21 @@ impl DocumentHistoryManager {
         }
 
         let transaction_id = self.transaction_stack.pop().unwrap();
-        let transaction = self.transactions.iter_mut()
-            .find(|t| t.id == transaction_id);
+        let transaction_name = self.transactions.iter()
+            .find(|t| t.id == transaction_id)
+            .map(|t| t.name.clone());
 
-        if let Some(t) = transaction {
-            while let Some(entry_idx) = self.find_last_transaction_entry(t.id) {
-                self.undo();
-            }
+        while self.find_last_transaction_entry(transaction_id).is_some() {
+            self.undo();
+        }
 
+        if let Some(name) = transaction_name {
             for listener in &self.listeners {
-                listener.on_transaction_completed(&t.name, false);
+                listener.on_transaction_completed(&name, false);
             }
         }
 
-        self
+        true
     }
 
     fn find_last_transaction_entry(&self, transaction_id: u64) -> Option<usize> {
@@ -455,7 +455,8 @@ impl DocumentHistoryManager {
     pub fn end_batch(&mut self) {
         if self.batch_depth > 0 {
             self.batch_depth -= 1;
-            for entry in self.pending_entries.drain(..) {
+            let pending = std::mem::take(&mut self.pending_entries);
+            for entry in pending {
                 self.record(entry);
             }
         }
@@ -583,7 +584,7 @@ impl DocumentHistoryManager {
     }
 
     pub fn execute_undo(&mut self, doc: &mut Document) -> Result<(), String> {
-        if let Some(entry) = self.undo() {
+        if let Some(entry) = self.undo().cloned() {
             match entry.action_type.as_str() {
                 "Add" => {
                     for entity_id_str in &entry.entity_ids {
@@ -604,7 +605,7 @@ impl DocumentHistoryManager {
                     }
                 }
                 _ => {
-                    self.apply_undo(doc, entry)?;
+                    self.apply_undo(doc, &entry)?;
                 }
             }
             Ok(())
@@ -614,7 +615,7 @@ impl DocumentHistoryManager {
     }
 
     pub fn execute_redo(&mut self, doc: &mut Document) -> Result<(), String> {
-        if let Some(entry) = self.redo() {
+        if let Some(entry) = self.redo().cloned() {
             match entry.action_type.as_str() {
                 "Add" => {
                     if let Some(after_data) = &entry.after_data {
@@ -635,7 +636,7 @@ impl DocumentHistoryManager {
                     }
                 }
                 _ => {
-                    self.apply_redo(doc, entry)?;
+                    self.apply_redo(doc, &entry)?;
                 }
             }
             Ok(())
